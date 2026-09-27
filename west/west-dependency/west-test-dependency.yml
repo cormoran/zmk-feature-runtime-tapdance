@@ -6,15 +6,9 @@ manifest:
     - name: cormoran
       url-base: https://github.com/cormoran
   projects:
-    # TODO: switch revision back to main+custom-studio-protocol once
-    # cormoran/zmk's fix/local-id-map-writable-section branch merges. The BLE
-    # (BabbleSim) tests need its two fixes (writable behavior local-id map
-    # section + settings_subsys_init before dynamic handler registration);
-    # without them the split central segfaults / never starts BLE on
-    # nrf52_bsim.
     - name: zmk
       remote: cormoran
-      revision: fffa339cf6f5c45366ab332d2b512f1c3c300753
+      revision: main+custom-studio-protocol
       import:
         file: app/west.yml
       clone-depth: 1
