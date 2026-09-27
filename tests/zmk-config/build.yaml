@@ -6,7 +6,7 @@ include:
   - artifact: runtime_tapdance_board_with_rpc
     board: xiao_ble//zmk
     shield: tester_xiao
-    cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_RUNTIME_TAPDANCE=y -DCONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y
+    cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_RUNTIME_TAPDANCE=y -DCONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y -DCONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE=256 -DCONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=256
     snippet: studio-rpc-usb-uart
 
   - artifact: runtime_tapdance_board_without_rpc
@@ -22,13 +22,13 @@ include:
   - artifact: web_e2e
     board: xiao_ble//zmk
     shield: tester_xiao
-    cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_STUDIO_LOCKING=n -DCONFIG_ZMK_RUNTIME_TAPDANCE=y -DCONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y
+    cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_STUDIO_LOCKING=n -DCONFIG_ZMK_RUNTIME_TAPDANCE=y -DCONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y -DCONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE=256 -DCONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=256
     snippet: studio-rpc-usb-uart
 
   - artifact: custom_settings_board
     board: xiao_ble//zmk
     shield: tester_xiao
-    cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_RUNTIME_TAPDANCE=y -DCONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y -DCONFIG_ZMK_CUSTOM_SETTINGS=y -DCONFIG_ZMK_CUSTOM_SETTINGS_STUDIO_RPC=y
+    cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_RUNTIME_TAPDANCE=y -DCONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y -DCONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE=256 -DCONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=256 -DCONFIG_ZMK_CUSTOM_SETTINGS=y -DCONFIG_ZMK_CUSTOM_SETTINGS_STUDIO_RPC=y
     snippet: studio-rpc-usb-uart
 
   # Hardware-free Renode testing (see README.md) -- the `wired-split` mode of
@@ -39,15 +39,10 @@ include:
   # boards/shields/ here) of zmk-west-commands' test shields of the same name.
   # Emulation-only images (USB/split pinctrl), not flashable as-is.
   #
-  # The module's split-relay sample is NOT built here: relay-over-wired needs a
-  # newer zmk than the pin (fffa339 relays only over BLE, so a BLE-off wired
-  # half fails to link). That path is covered by the BabbleSim BLE test. To
-  # re-enable once the pin advances: add CONFIG_ZMK_SPLIT_RELAY_EVENT to both
-  # halves and restore the relay assertion in renode_test.py.
   - artifact: usb_wired_central
     board: xiao_ble//zmk
     shield: renode_usb_wired_split
-    cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_RUNTIME_TAPDANCE=y -DCONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y
+    cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_RUNTIME_TAPDANCE=y -DCONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y -DCONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE=256 -DCONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=256
     snippets:
       - studio-rpc-usb-uart
 

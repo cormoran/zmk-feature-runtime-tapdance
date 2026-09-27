@@ -38,6 +38,9 @@ CONFIG_ZMK_RUNTIME_TAPDANCE=y
 CONFIG_ZMK_STUDIO=y
 CONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y
 CONFIG_ZMK_CUSTOM_SETTINGS_STUDIO_RPC=y
+CONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE=256
+CONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=256
+CONFIG_ZMK_LOW_PRIORITY_THREAD_STACK_SIZE=2048
 ```
 
 Build with the `studio-rpc-usb-uart` snippet for USB Web Serial. Include an
@@ -66,11 +69,21 @@ Pages with GitHub Actions as its source.
 4. Choose **Delay normal keys** or **Immediate normal keys** for this entry.
 5. Apply changes to RAM for testing, or save them to persist across reboot.
 
-An enabled position must be unique. There are 16 slots by default; adjust
+For example, leave position 0's normal binding as `&kp A`, then assign **Key
+Press** to its double and triple actions. Use parameter 1 `458757` (`0x70005`,
+keyboard B) for double and `458758` (`0x70006`, keyboard C) for triple; parameter
+2 is `0`. In delayed mode this produces normal A for a single, B for a double,
+and C for a triple. Parameters are numeric ZMK binding values; the firmware
+validates them against the selected behavior's metadata.
+
+An enabled position must be unique. Additional actions use a separate virtual
+position so their hold-tap state is independent of the normal key. There are 16
+slots by default; adjust
 `CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES` at build time if needed.
 Deleting a saved entry restores its normal keymap behavior. Changes made only
 in RAM disappear on reboot. Module values are also registered in the common
-custom-settings subsystem for settings import/export.
+custom-settings subsystem for settings import/export. Behavior IDs in a slot
+refer to the connected keyboard; reuse exports with the same behavior mapping.
 
 ## Recognition rules
 
@@ -79,10 +92,10 @@ include a release before the next press. A press exactly at the deadline starts
 a new sequence. Two presses wait until the deadline to distinguish a double
 from a triple; the third press triggers the triple immediately.
 
-| Mode | Single tap | Double/triple tap |
-| --- | --- | --- |
-| Delayed | Replay the normal press/release after the interval | Suppress normal keys and invoke the assigned behavior |
-| Immediate | Send every normal press/release immediately | Also invoke the assigned behavior |
+| Mode      | Single tap                                         | Double/triple tap                                     |
+| --------- | -------------------------------------------------- | ----------------------------------------------------- |
+| Delayed   | Replay the normal press/release after the interval | Suppress normal keys and invoke the assigned behavior |
+| Immediate | Send every normal press/release immediately        | Also invoke the assigned behavior                     |
 
 If the matching double/triple action is unassigned, delayed mode replays the
 normal keys for that sequence. A long first hold becomes a normal held key when
@@ -93,8 +106,10 @@ editing or deleting an entry during a held key does not leave it stuck.
 
 Bindings that change layers follow ordinary ZMK behavior semantics. Delayed
 normal keys reach the keymap when replayed, so intervening layer changes can
-change their normal action. This module does not promise composition with
-other position-event consumers such as compile-time combos or tap dances.
+change their normal action. ZMK's limit of one undecided hold-tap still applies;
+an action returning an error falls back to normal keys in delayed mode. This
+module does not promise composition with other position-event consumers such as
+compile-time combos or tap dances.
 
 ## Development and tests
 

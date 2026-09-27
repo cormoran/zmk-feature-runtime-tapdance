@@ -1,5 +1,1 @@
-# Nanopb options file for runtime_tapdance.proto
-# This defines max sizes for string fields
-
-cormoran.runtime_tapdance.SampleResponse.value    max_size:64
-cormoran.runtime_tapdance.ErrorResponse.message   max_size:64
+cormoran.runtime_tapdance.ErrorResponse.message max_size:64

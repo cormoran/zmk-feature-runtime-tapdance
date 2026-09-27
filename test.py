@@ -54,6 +54,9 @@ class WestCommandsTests(unittest.TestCase):
         result = run_west(["zmk-test", "tests", "-m", ".", "-d", str(test_build_dir)])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("PASS: studio", result.stdout, result.stdout + result.stderr)
+        self.assertIn(
+            "PASS: runtime-tapdance", result.stdout, result.stdout + result.stderr
+        )
         self.assertNotIn("FAILED: ", result.stdout, result.stdout + result.stderr)
 
     @unittest.skipUnless(
@@ -122,7 +125,8 @@ class WestCommandsTests(unittest.TestCase):
                         "CONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y",
                         "CONFIG_ZMK_CUSTOM_SETTINGS=y",
                         "CONFIG_ZMK_CUSTOM_SETTINGS_STUDIO_RPC=y",
-                        "CONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE=128",
+                        "CONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE=256",
+                        "CONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=256",
                         "CONFIG_ZMK_LOW_PRIORITY_THREAD_STACK_SIZE=2048",
                     ],
                     device=[],
@@ -174,6 +178,11 @@ class WestCommandsTests(unittest.TestCase):
                 "-d",
                 str(self.BUILD_DIR),
                 "-q",
+                "-P",
+                "4",
+                "--extra-module-auto-discovery",
+                "zmk-config",
+                "current",
             ]
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

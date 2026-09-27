@@ -1,11 +1,11 @@
 zephyr_include_directories(include)
 if(CONFIG_ZMK_RUNTIME_TAPDANCE)
-    # target_sources(app PRIVATE ...)
-
-    # Split-relay sample: compiled into BOTH split roles, gated on ZMK's own
-    # relay Kconfig -- see include/cormoran/runtime-tapdance/template_relay.h.
-    if(CONFIG_ZMK_SPLIT_RELAY_EVENT)
-        target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/split/template_relay.c)
+    if(CONFIG_ZMK_RUNTIME_TAPDANCE_NATIVE_BLE_TEST)
+        target_sources(app PRIVATE tests/ble/native_writable_local_id_map.S)
+    endif()
+    target_sources(app PRIVATE src/runtime_tapdance/runtime_tapdance.c)
+    if(CONFIG_ZMK_RUNTIME_TAPDANCE_TEST)
+        target_sources(app PRIVATE src/runtime_tapdance/runtime_tapdance_test.c)
     endif()
 
     if(CONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC)

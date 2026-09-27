@@ -1,15 +1,35 @@
 config ZMK_RUNTIME_TAPDANCE
     bool "Enable runtime tap dance"
+    select SETTINGS
+    select ZMK_CUSTOM_SETTINGS
+    select ZMK_CUSTOM_SETTINGS_ARRAY
+    select ZMK_BEHAVIOR_LOCAL_IDS
+    select ZMK_BEHAVIOR_METADATA
 
 if ZMK_RUNTIME_TAPDANCE
+
+config ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES
+    int "Maximum runtime tap dances"
+    default 16
+    range 1 16
+
+config ZMK_RUNTIME_TAPDANCE_NATIVE_BLE_TEST
+    bool "Enable native BLE fixture linker workaround"
+    depends on ARCH_POSIX
+    help
+      Test-only workaround for the selected ZMK baseline's const local-ID map
+      on native hosts. Never enable in consumer firmware.
+
+config ZMK_RUNTIME_TAPDANCE_TEST
+    bool "Enable runtime tap dance public event tests"
 
 config ZMK_RUNTIME_TAPDANCE_STUDIO_RPC
     bool "Enable runtime tap dance custom Studio RPC"
     depends on ZMK_STUDIO
-
-# The split-relay sample (src/split/template_relay.c) has no Kconfig of its
-# own: it follows ZMK's CONFIG_ZMK_SPLIT_RELAY_EVENT directly. Enable that
-# explicitly on BOTH split halves to compile it (the central additionally
-# needs ZMK_RUNTIME_TAPDANCE_STUDIO_RPC for the RPC that triggers the relay).
+    select ZMK_CUSTOM_SETTINGS_STUDIO_RPC
 
 endif
+
+choice ZMK_BEHAVIOR_LOCAL_ID_TYPE
+    default ZMK_BEHAVIOR_LOCAL_ID_TYPE_CRC16 if ZMK_RUNTIME_TAPDANCE && !ZMK_STUDIO
+endchoice

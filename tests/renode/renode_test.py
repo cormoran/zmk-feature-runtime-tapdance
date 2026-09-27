@@ -23,6 +23,10 @@ from __future__ import annotations
 
 import os
 import sys
+import subprocess
+import socket
+import threading
+from collections import deque
 import time
 import unittest
 from pathlib import Path
@@ -60,10 +64,6 @@ KNOWN_SUBSYSTEM_INDEX = 0
 # registers -- used to exercise the fast-path dispatch (see
 # test_custom_rpc_invalid_index_dispatch).
 INVALID_SUBSYSTEM_INDEX = 99
-
-SAMPLE_VALUE = 42
-# See handle_sample_request() in src/studio/runtime_tapdance_handler.c.
-EXPECTED_SAMPLE_RESPONSE = f"Hello from firmware! Received: {SAMPLE_VALUE}"
 
 # attach_dual_cdc_bridge's default bridge name -> monitor object prefix.
 BRIDGE_NAME = "bridge"
@@ -112,7 +112,7 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         cls.peripheral_elf = Path(peripheral_env)
         for elf in (cls.central_elf, cls.peripheral_elf):
             if not elf.is_file():
-                raise unittest.SkipTest(f"ELF does not exist: {elf}")
+                raise AssertionError(f"Configured ELF does not exist: {elf}")
 
         storage_addr = int(
             os.environ.get("ZMK_RENODE_STORAGE_ADDR")
@@ -127,7 +127,16 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
 
         # Core zmk.studio.* messages (Request/Response envelope, core.proto,
         # custom.proto for the generic custom-subsystem envelope).
-        studio_proto_dir = renode_harness.find_studio_proto_dir(REPO_ROOT)
+        # The module may be a shared-profile worktree rather than the West root.
+        try:
+            messages = subprocess.check_output(
+                ["west", "list", "zmk-studio-messages", "-f", "{abspath}"],
+                cwd=REPO_ROOT,
+                text=True,
+            ).strip()
+            studio_proto_dir = Path(messages) / "proto" / "zmk"
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            studio_proto_dir = renode_harness.find_studio_proto_dir(REPO_ROOT)
         cls.studio_pb2 = renode_harness.load_studio_pb2(studio_proto_dir)
 
         # This module's own proto (package cormoran.runtime_tapdance) -- protoc
@@ -178,9 +187,32 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
 
         # Let the guest finish USB bring-up before the host attaches (a SETUP
         # fired before the guest's INTEN is set is silently lost).
-        settle_deadline = time.monotonic() + 8.0
-        while time.monotonic() < settle_deadline:
-            renode_harness.drain_text(cls.central_console._sock, timeout=0.5)
+        # Unread UART logs can backpressure Renode's terminal and stall the
+        # firmware logger. Keep every non-Studio socket draining during RPC.
+        cls.console_log = deque(maxlen=3000)
+        cls.peripheral_log = deque(maxlen=3000)
+
+        def drain_console(stream, captured):
+            stream.settimeout(0.5)
+            while True:
+                try:
+                    chunk = stream.recv(4096)
+                    if not chunk:
+                        return
+                    captured.append(chunk.decode(errors="replace"))
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+
+        for stream, captured in (
+            (cls.central_console._sock, cls.console_log),
+            (cls.peripheral_console._sock, cls.peripheral_log),
+        ):
+            threading.Thread(
+                target=drain_console, args=(stream, captured), daemon=True
+            ).start()
+        time.sleep(8.0)
 
         cdc0, cdc1 = renode_harness.attach_dual_cdc_bridge(
             cls.session, cls.port_base + 4, cls.port_base + 5
@@ -214,7 +246,12 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
 
     def _read_response(self, timeout: float = 10.0):
         resp_bytes = self.studio.read_frame(timeout=timeout)
-        self.assertIsNotNone(resp_bytes, "no Studio RPC response frame (timeout)")
+        if resp_bytes is None:
+            console = "".join(self.console_log)
+            pc = self.session.mon.execute("sysbus.cpu PC", settle=0.2)
+            self.fail(
+                f"no Studio RPC response frame (timeout); CPU={pc}; console:\n{console}"
+            )
         resp = self.studio_pb2.Response()
         resp.ParseFromString(resp_bytes)
         return resp
@@ -240,37 +277,140 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
 
     # -- The real thing: this module's own custom RPC, over USB --------------
 
-    def test_custom_rpc_sample_round_trip_over_usb(self):
-        """Send this module's own SampleRequest to its registered subsystem
-        (index 0) and assert the SampleResponse comes back over the central's
-        USB CDC."""
-        inner_req = self.template_pb2.Request()
-        inner_req.sample.value = SAMPLE_VALUE
-        self._send_call(
-            KNOWN_SUBSYSTEM_INDEX, inner_req.SerializeToString(), request_id=1
+    def _module_call(self, request, request_id=10):
+        self._send_call(KNOWN_SUBSYSTEM_INDEX, request.SerializeToString(), request_id)
+        envelope = self._read_response()
+        self.assertEqual(envelope.request_response.request_id, request_id)
+        self.assertEqual(envelope.request_response.WhichOneof("subsystem"), "custom")
+        result = self.template_pb2.Response()
+        result.ParseFromString(envelope.request_response.custom.call.payload)
+        return result
+
+    def _reboot_central_preserving_flash(self):
+        """Reset the existing machine, retaining its mapped flash/NVS contents."""
+        mon = self.session.mon
+        self.console_log.clear()
+        mon.execute('mach set "central"')
+        mon.execute("pause")
+        mon.execute("machine Reset")
+        # The UF2 application starts at this vector-table offset, as on first boot.
+        mon.execute("sysbus.cpu VectorTableOffset 0x27000")
+        mon.execute("start")
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and "Welcome to ZMK" not in "".join(
+            self.console_log
+        ):
+            time.sleep(0.1)
+        self.assertIn("Welcome to ZMK", "".join(self.console_log))
+        time.sleep(8)
+        cdc0, cdc1 = renode_harness.attach_dual_cdc_bridge(
+            self.session,
+            self.port_base + 6,
+            self.port_base + 7,
+            name="reboot_bridge",
+            machines=["central", "peripheral"],
+        )
+        self.addClassCleanup(cdc0.close)
+        self.addClassCleanup(cdc1.close)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if _mon_is_true(mon, "sysbus.reboot_bridge_cdc0 IsWired"):
+                break
+        else:
+            self.fail("Studio USB CDC did not re-enumerate after reset")
+        dual_cdc = _mon_is_true(mon, "sysbus.reboot_bridge_cdc1 IsWired")
+        time.sleep(2)
+        # The next test method shares this reset machine and the new host bridge.
+        type(self).studio = cdc1 if dual_cdc else cdc0
+
+    def test_runtime_configuration_crud_over_usb(self):
+        """Round-trip slot config and globals, including real validation errors."""
+        proto = self.template_pb2
+        initial = self._module_call(proto.Request(get=proto.GetRequest(index=0)))
+        self.assertEqual(initial.WhichOneof("response_type"), "state")
+        self.assertEqual(initial.state.max_count, 16)
+        self.assertTrue(initial.state.HasField("config"))
+        self.assertTrue(initial.state.config.HasField("double_binding"))
+        self.assertTrue(initial.state.config.HasField("triple_binding"))
+
+        interval = self._module_call(
+            proto.Request(
+                set_interval=proto.SetIntervalRequest(interval_ms=250, persist=True)
+            )
+        )
+        self.assertEqual(interval.state.interval_ms, 250)
+        config = proto.Config(
+            enabled=True,
+            position=0,
+            delay_single=True,
+            double_binding=proto.Binding(),
+            triple_binding=proto.Binding(),
+        )
+        written = self._module_call(
+            proto.Request(set=proto.SetRequest(index=0, config=config, persist=True))
+        )
+        self.assertEqual(written.state.config, config)
+        reread = self._module_call(proto.Request(get=proto.GetRequest(index=0)))
+        self.assertEqual(reread.state.config, config)
+        self.assertEqual(reread.state.interval_ms, 250)
+        # Overwrite RAM only so the post-reset oracle cannot pass by reading
+        # the same in-memory value: flash must restore both independent settings.
+        self._module_call(
+            proto.Request(
+                set=proto.SetRequest(
+                    index=0,
+                    config=proto.Config(enabled=False, position=1, delay_single=False),
+                )
+            )
+        )
+        self._module_call(
+            proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=300))
+        )
+        self._reboot_central_preserving_flash()
+        restored = self._module_call(proto.Request(get=proto.GetRequest(index=0)))
+        self.assertEqual(restored.state.config, config)
+        self.assertEqual(restored.state.interval_ms, 250)
+
+        duplicate = self._module_call(
+            proto.Request(set=proto.SetRequest(index=1, config=config))
+        )
+        self.assertEqual(duplicate.WhichOneof("response_type"), "error")
+        self.assertLess(duplicate.error.code, 0)
+        removed = self._module_call(
+            proto.Request(remove=proto.RemoveRequest(index=0, persist=True))
+        )
+        self.assertFalse(removed.state.config.enabled)
+        self.assertEqual(removed.state.config.double_binding.behavior_id, 0)
+        self.assertEqual(removed.state.config.triple_binding.behavior_id, 0)
+        self._module_call(
+            proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=200))
         )
 
-        resp = self._read_response()
-        self.assertEqual(resp.WhichOneof("type"), "request_response")
-        self.assertEqual(resp.request_response.request_id, 1)
-        self.assertEqual(resp.request_response.WhichOneof("subsystem"), "custom")
-
-        # zmk.custom.Response -> CallResponse{subsystem_index, payload}.
-        custom_resp = resp.request_response.custom
-        self.assertEqual(custom_resp.WhichOneof("response_type"), "call")
-        self.assertEqual(custom_resp.call.subsystem_index, KNOWN_SUBSYSTEM_INDEX)
-
-        inner_resp = self.template_pb2.Response()
-        inner_resp.ParseFromString(custom_resp.call.payload)
-        self.assertEqual(inner_resp.WhichOneof("response_type"), "sample")
-        self.assertEqual(inner_resp.sample.value, EXPECTED_SAMPLE_RESPONSE)
-
-    # The module's split-relay sample (central forwarding the value to the
-    # peripheral) is covered by the BabbleSim BLE test, not here: relay-over-wired
-    # needs a newer zmk than the pin. To add once it advances: build the
-    # peripheral with the module + CONFIG_ZMK_SPLIT_RELAY_EVENT and assert its
-    # "Peripheral received relayed sample value: 42 (v1)" log on
-    # self.peripheral_console.
+    def test_runtime_rpc_invalid_requests(self):
+        proto = self.template_pb2
+        bad_requests = [
+            proto.Request(),
+            proto.Request(get=proto.GetRequest(index=16)),
+            proto.Request(set=proto.SetRequest(index=0)),
+            proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=0)),
+            proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=2001)),
+            proto.Request(
+                set=proto.SetRequest(
+                    index=0,
+                    config=proto.Config(
+                        enabled=True,
+                        position=0,
+                        double_binding=proto.Binding(behavior_id=0xFFFFFFFF),
+                    ),
+                )
+            ),
+        ]
+        for request in bad_requests:
+            with self.subTest(request=request):
+                result = self._module_call(request)
+                self.assertEqual(result.WhichOneof("response_type"), "error")
+                self.assertLess(result.error.code, 0)
+                self.assertTrue(result.error.message)
 
 
 if __name__ == "__main__":
