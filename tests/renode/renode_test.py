@@ -52,7 +52,7 @@ except ImportError:  # pragma: no cover - convenience fallback for local dev
         raise
 
 
-SUBSYSTEM_IDENTIFIER = "your_name__template"
+SUBSYSTEM_IDENTIFIER = "cormoran__runtime_tapdance"
 # This template registers exactly one custom subsystem, so its index is
 # deterministically 0.
 KNOWN_SUBSYSTEM_INDEX = 0
@@ -62,7 +62,7 @@ KNOWN_SUBSYSTEM_INDEX = 0
 INVALID_SUBSYSTEM_INDEX = 99
 
 SAMPLE_VALUE = 42
-# See handle_sample_request() in src/studio/template_handler.c.
+# See handle_sample_request() in src/studio/runtime_tapdance_handler.c.
 EXPECTED_SAMPLE_RESPONSE = f"Hello from firmware! Received: {SAMPLE_VALUE}"
 
 # attach_dual_cdc_bridge's default bridge name -> monitor object prefix.
@@ -130,14 +130,20 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         studio_proto_dir = renode_harness.find_studio_proto_dir(REPO_ROOT)
         cls.studio_pb2 = renode_harness.load_studio_pb2(studio_proto_dir)
 
-        # This module's own proto (package your_name.template) -- protoc
-        # normalizes the hyphenated "your-name" path to the "your_name" package.
+        # This module's own proto (package cormoran.runtime_tapdance) -- protoc
+        # normalizes the hyphenated "runtime-tapdance" path to the "runtime_tapdance" package.
         out_dir = renode_harness.compile_protos(
-            [REPO_ROOT / "proto" / "your-name" / "template" / "template.proto"],
+            [
+                REPO_ROOT
+                / "proto"
+                / "cormoran"
+                / "runtime-tapdance"
+                / "runtime_tapdance.proto"
+            ],
             include_dirs=[REPO_ROOT / "proto"],
         )
         sys.path.insert(0, str(out_dir))
-        import your_name.template.template_pb2 as template_pb2  # type: ignore
+        import cormoran.runtime_tapdance.runtime_tapdance_pb2 as template_pb2  # type: ignore
 
         cls.template_pb2 = template_pb2
 
@@ -240,7 +246,9 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         USB CDC."""
         inner_req = self.template_pb2.Request()
         inner_req.sample.value = SAMPLE_VALUE
-        self._send_call(KNOWN_SUBSYSTEM_INDEX, inner_req.SerializeToString(), request_id=1)
+        self._send_call(
+            KNOWN_SUBSYSTEM_INDEX, inner_req.SerializeToString(), request_id=1
+        )
 
         resp = self._read_response()
         self.assertEqual(resp.WhichOneof("type"), "request_response")
