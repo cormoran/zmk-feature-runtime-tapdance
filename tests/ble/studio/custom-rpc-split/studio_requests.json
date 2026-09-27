@@ -1,7 +1,13 @@
 [
   {
     "custom": {
-      "listCustomSubsystems": {}
+      "call": {
+        "subsystemIndex": 0,
+        "payload": {
+          "$type": "cormoran.runtime_tapdance.Request",
+          "get": { "index": 0 }
+        }
+      }
     }
   },
   {
@@ -9,8 +15,19 @@
       "call": {
         "subsystemIndex": 0,
         "payload": {
-          "$type": "your_name.template.Request",
-          "sample": { "value": 42 }
+          "$type": "cormoran.runtime_tapdance.Request",
+          "setInterval": { "intervalMs": 250, "persist": false }
+        }
+      }
+    }
+  },
+  {
+    "custom": {
+      "call": {
+        "subsystemIndex": 0,
+        "payload": {
+          "$type": "cormoran.runtime_tapdance.Request",
+          "get": { "index": 0 }
         }
       }
     }

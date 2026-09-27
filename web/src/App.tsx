@@ -1,26 +1,21 @@
-import { useContext, useEffect, useState } from "react";
 import "./App.css";
 import { connect as gattConnect } from "@zmkfirmware/zmk-studio-ts-client/transport/gatt";
 import {
   ZMKConnection,
-  ZMKAppContext,
-  useStudioLockState,
-  isUnlockRequiredError,
   isWebSerialSupported,
   isWebBluetoothSupported,
-  useCustomSubsystem,
   connectSerial,
 } from "@cormoran/zmk-studio-react-hook";
-import { Request, Response } from "./proto/your-name/template/template";
+import { TapDanceEditor } from "./TapDanceEditor";
 
-export const SUBSYSTEM_IDENTIFIER = "your_name__template";
+export const SUBSYSTEM_IDENTIFIER = "cormoran__runtime_tapdance";
 
 // Template placeholder: `scripts/init_module.py` rewrites this literal to
 // `{owner}/{repo}`. Never write the full
 // `...-with-custom-studio-rpc` repo name in a URL built from this constant --
 // the replacement targets this exact string first, which would otherwise
 // leave the owner unreplaced.
-export const GITHUB_REPO = "cormoran/zmk-module-template";
+export const GITHUB_REPO = "cormoran/zmk-feature-runtime-tapdance";
 
 // Unlike GITHUB_REPO above, this always credits the original template
 // project, regardless of which repo this module was forked into. The
@@ -33,8 +28,8 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>🔧 ZMK Module Template</h1>
-        <p>Custom Studio RPC Demo</p>
+        <h1>🔧 zmk-feature-runtime-tapdance</h1>
+        <p>Configure tap dances on your keyboard</p>
       </header>
 
       <ZMKConnection
@@ -101,14 +96,15 @@ function App() {
               </button>
             </section>
 
-            <RPCTestSection />
+            <TapDanceEditor />
           </>
         )}
       />
 
       <footer className="app-footer">
         <p>
-          <strong>Template Module</strong> - Customize this for your ZMK module
+          <strong>zmk-feature-runtime-tapdance</strong> - Configure runtime tap
+          dances
         </p>
         <p>
           <a
@@ -139,135 +135,6 @@ function App() {
         </p>
       </footer>
     </div>
-  );
-}
-
-export function RPCTestSection() {
-  const zmkApp = useContext(ZMKAppContext);
-  const { ready, subsystem, call } = useCustomSubsystem(SUBSYSTEM_IDENTIFIER, {
-    encode: (r: Request) => Request.encode(r).finish(),
-    decode: Response.decode,
-  });
-  const { locked } = useStudioLockState();
-  const [inputValue, setInputValue] = useState<number>(42);
-  const [response, setResponse] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [awaitingUnlock, setAwaitingUnlock] = useState(false);
-
-  const sendSampleRequest = async () => {
-    if (!ready) return;
-
-    setIsLoading(true);
-    setResponse(null);
-
-    try {
-      const resp = await call({ sample: { value: inputValue } });
-      setAwaitingUnlock(false);
-      console.log("Decoded response:", resp);
-
-      if (resp?.sample) {
-        setResponse(resp.sample.value);
-      } else if (resp?.error) {
-        setResponse(`Error: ${resp.error.message}`);
-      }
-    } catch (error) {
-      if (isUnlockRequiredError(error)) {
-        setAwaitingUnlock(true);
-      } else {
-        console.error("RPC call failed:", error);
-        setResponse(
-          `Failed: ${error instanceof Error ? error.message : "Unknown error"}`
-        );
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Auto-retry once the device reports it's unlocked again -- covers the
-  // common case where the user presses &studio_unlock after seeing the
-  // prompt below without needing to click "Retry" themselves.
-  useEffect(() => {
-    if (awaitingUnlock && !locked) {
-      // This mirrors an external system (the device's lock state) rather
-      // than deriving from props/state, so a direct setState here is
-      // intentional -- see react-hooks/set-state-in-effect's rationale (same
-      // pattern used by useStudioLockState itself).
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setAwaitingUnlock(false);
-      void sendSampleRequest();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locked]);
-
-  if (!zmkApp) return null;
-
-  if (!subsystem) {
-    return (
-      <section className="card">
-        <div className="warning-message">
-          <p>
-            ⚠️ Subsystem "{SUBSYSTEM_IDENTIFIER}" not found. Make sure your
-            firmware includes the template module. See the{" "}
-            <a href={`https://github.com/${GITHUB_REPO}#readme`}>
-              module README
-            </a>{" "}
-            for firmware setup.
-          </p>
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <section className="card">
-      <h2>RPC Test</h2>
-      <p>Send a sample request to the firmware:</p>
-
-      {locked && (
-        <div className="locked-banner">
-          <p>🔒 ZMK Studio is locked.</p>
-        </div>
-      )}
-
-      <div className="input-group">
-        <label htmlFor="value-input">Value:</label>
-        <input
-          id="value-input"
-          type="number"
-          value={inputValue}
-          onChange={(e) => setInputValue(parseInt(e.target.value) || 0)}
-        />
-      </div>
-
-      <button
-        className="btn btn-primary"
-        disabled={isLoading || locked}
-        onClick={sendSampleRequest}
-      >
-        {isLoading ? "⏳ Sending..." : "📤 Send Request"}
-      </button>
-
-      {awaitingUnlock && (
-        <div className="unlock-prompt card">
-          <p>
-            🔒 ZMK Studio is locked. Press the unlock key (
-            <code>&amp;studio_unlock</code> behavior) on your keyboard — the
-            request will retry automatically.
-          </p>
-          <button className="btn btn-secondary" onClick={sendSampleRequest}>
-            Retry
-          </button>
-        </div>
-      )}
-
-      {response && (
-        <div className="response-box">
-          <h3>Response from Firmware:</h3>
-          <pre>{response}</pre>
-        </div>
-      )}
-    </section>
   );
 }
 

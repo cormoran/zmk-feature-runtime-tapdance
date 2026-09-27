@@ -81,6 +81,8 @@ jobs:
   # preview jobs below can gate on.
   cf-check:
     needs: build
+    # The preview credentials may be stored as Environment secrets.
+    environment: approval-required
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -1,55 +1,58 @@
-/**
- * End-to-end: this web UI, in a real browser, against this module's real
- * firmware -- with no hardware.
- *
- * The firmware runs in the Renode emulator, booted by zmk-west-commands'
- * `west zmk-web-e2e`, which serves the DUT's ZMK Studio RPC (carried over its
- * emulated USB CDC) to the browser and hands us a `navigator.serial` shim at
- * $ZMK_WEB_E2E_SHIM_URL. Installing that shim is the only thing faked here: the
- * app, its transport, the RPC framing and the firmware are all real.
- *
- *   west zmk-build tests/zmk-config -af web_e2e
- *   west zmk-web-e2e --elf build/web_e2e/zephyr/zmk.elf -- npm --prefix web run e2e
- *
- * Rewrite the RPC assertions for your own module's requests; the connect half
- * stays as is.
+/** Real Web Serial transport and protobuf RPC against a Renode firmware DUT.
+ * Run: west zmk-web-e2e --elf build/web_e2e/zephyr/zmk.elf -- npm --prefix web run e2e
  */
 import { test, expect } from "@playwright/test";
-
 const SHIM_URL = process.env.ZMK_WEB_E2E_SHIM_URL;
-// CONFIG_ZMK_KEYBOARD_NAME of the DUT (tests/zmk-config/config/tester_xiao.conf).
 const DEVICE_NAME = process.env.ZMK_WEB_E2E_DEVICE_NAME || "Module Test";
-const SAMPLE_VALUE = "42";
-// See handle_sample_request() in src/studio/template_handler.c.
-const EXPECTED_RESPONSE = `Hello from firmware! Received: ${SAMPLE_VALUE}`;
-
-test("the web UI round-trips the custom RPC with real firmware", async ({
+test("configures and removes tap dances through real firmware", async ({
   page,
   request,
 }) => {
-  test.skip(
-    !SHIM_URL,
-    "no DUT: run this through `west zmk-web-e2e` (see the file header)"
-  );
-
-  // Install the navigator.serial shim before the app's own scripts run, so the
-  // app sees a serial port -- the DUT's Studio CDC in Renode -- to connect to.
+  test.skip(!SHIM_URL, "run through west zmk-web-e2e with a Renode DUT");
   await page.addInitScript(await (await request.get(SHIM_URL!)).text());
   await page.goto("/");
-
-  // Click the app's real Connect button. Its transport opens the shimmed port,
-  // completes the Studio handshake against the firmware, and the app renders
-  // the name the firmware reported.
   await page.getByRole("button", { name: /Connect USB/ }).click();
   await expect(page.getByText(`Connected to: ${DEVICE_NAME}`)).toBeVisible();
-
-  // The firmware registered this module's custom subsystem: the app found it
-  // and rendered its panel (it renders a "not found" warning otherwise).
-  await expect(page.getByRole("heading", { name: "RPC Test" })).toBeVisible();
-
-  // The module's own RPC, end to end: the app encodes a SampleRequest, the
-  // firmware's handler answers, and the decoded response reaches the DOM.
-  await page.getByLabel("Value:").fill(SAMPLE_VALUE);
-  await page.getByRole("button", { name: /Send Request/ }).click();
-  await expect(page.getByText(EXPECTED_RESPONSE)).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Runtime tap dances" })
+  ).toBeVisible();
+  await expect(page.getByText("0 / 16 tap dances")).toBeVisible();
+  await page.getByLabel("Tap interval (ms)").fill("250");
+  await page.getByRole("button", { name: "Apply interval" }).click();
+  await expect(page.getByText(/Applied in RAM/)).toBeVisible();
+  await page.getByRole("button", { name: "Save interval" }).click();
+  await expect(page.getByText("Saved to flash.")).toBeVisible();
+  await page.getByRole("button", { name: "Add tap dance" }).click();
+  await page.getByLabel("Position 1").fill("0");
+  await page.getByLabel("Timing 1").selectOption("delayed");
+  const doublePicker = page.getByLabel("Double 1 behavior", { exact: true });
+  const keyPress = doublePicker
+    .locator("option")
+    .filter({ hasText: /^Key Press/ });
+  await expect(keyPress).toHaveCount(1);
+  const keyPressId = await keyPress.getAttribute("value");
+  await doublePicker.selectOption(keyPressId!);
+  await page.getByLabel("Double 1 parameter 1").fill("458756");
+  await page
+    .getByLabel("Triple 1 behavior", { exact: true })
+    .selectOption(keyPressId!);
+  await page.getByLabel("Triple 1 parameter 1").fill("458757");
+  await page.getByRole("button", { name: "Save tap dance 1" }).click();
+  await expect(page.getByText("Saved to flash.")).toBeVisible();
+  await page.getByRole("button", { name: "Reload from keyboard" }).click();
+  await expect(page.getByLabel("Position 1")).toHaveValue("0");
+  await expect(page.getByLabel("Timing 1")).toHaveValue("delayed");
+  await expect(
+    page.getByLabel("Double 1 behavior", { exact: true })
+  ).toHaveValue(keyPressId!);
+  await expect(page.getByLabel("Double 1 parameter 1")).toHaveValue("458756");
+  await expect(page.getByLabel("Triple 1 parameter 1")).toHaveValue("458757");
+  await expect(page.getByLabel("Tap interval (ms)")).toHaveValue("250");
+  await page
+    .getByRole("button", { name: "Delete tap dance 1 (flash)" })
+    .click();
+  await expect(page.getByText("0 / 16 tap dances")).toBeVisible();
+  await page.getByLabel("Tap interval (ms)").fill("0");
+  await page.getByRole("button", { name: "Apply interval" }).click();
+  await expect(page.getByRole("alert")).toContainText("1 to 2000");
 });
