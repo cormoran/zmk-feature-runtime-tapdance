@@ -38,12 +38,7 @@ function stateOf(response: Response | null): State {
   return response.state;
 }
 function used(config: Config) {
-  return (
-    config.enabled ||
-    (config.singleBinding?.behaviorId ?? 0) !== 0 ||
-    (config.doubleBinding?.behaviorId ?? 0) !== 0 ||
-    (config.tripleBinding?.behaviorId ?? 0) !== 0
-  );
+  return (config.singleBinding?.behaviorId ?? 0) !== 0;
 }
 
 export function TapDanceEditor() {
@@ -60,7 +55,7 @@ export function TapDanceEditor() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [awaitingUnlock, setAwaitingUnlock] = useState(false);
-  const pending = useRef<Request | null>(null);
+  const pending = useRef<Request[] | null>(null);
   const previousLocked = useRef(locked);
   const loadGeneration = useRef({ value: 0 });
 
@@ -145,29 +140,36 @@ export function TapDanceEditor() {
   }, [connection]);
 
   const send = useCallback(
-    async (request: Request) => {
-      pending.current = request;
+    async (requests: Request | Request[]) => {
+      const batch = Array.isArray(requests) ? requests : [requests];
+      pending.current = batch;
       setBusy(true);
       setError("");
       setMessage("");
+      let next = 0;
       try {
-        const state = stateOf(await call(request));
-        if (request.set || request.remove) {
+        let state: State | null = null;
+        for (; next < batch.length; next++) {
+          state = stateOf(await call(batch[next]));
+        }
+        if (!state) return;
+        const last = batch[batch.length - 1];
+        if (last.set || last.remove) {
           setSlots((current) =>
             current.map((config, index) =>
               index === state.index ? state.config! : config
             )
           );
         }
-        if (request.remove)
+        if (last.remove)
           setVisible((current) =>
             current.filter((index) => index !== state.index)
           );
-        if (request.setInterval) setInterval(state.intervalMs);
+        if (last.setInterval) setInterval(state.intervalMs);
         const persist =
-          request.set?.persist ||
-          request.remove?.persist ||
-          request.setInterval?.persist;
+          last.set?.persist ||
+          last.remove?.persist ||
+          last.setInterval?.persist;
         setMessage(
           persist
             ? "Saved to flash."
@@ -176,6 +178,7 @@ export function TapDanceEditor() {
         setAwaitingUnlock(false);
         pending.current = null;
       } catch (reason) {
+        pending.current = batch.slice(next);
         if (isUnlockRequiredError(reason)) setAwaitingUnlock(true);
         else setError(reason instanceof Error ? reason.message : "RPC failed");
       } finally {
@@ -221,8 +224,8 @@ export function TapDanceEditor() {
       )
     );
   const validate = (config: Config) => {
-    if (config.enabled && !config.singleBinding?.behaviorId)
-      return "Select a single-tap behavior for an enabled dance.";
+    if (!config.singleBinding?.behaviorId)
+      return "Select a single-tap behavior for this dance.";
     if (config.tripleBinding?.behaviorId && !config.doubleBinding?.behaviorId)
       return "Select a double-tap behavior before adding a triple tap.";
     for (const binding of [
@@ -239,12 +242,21 @@ export function TapDanceEditor() {
     return "";
   };
   const write = (index: number, persist: boolean) => {
-    const issue = validate(slots[index]);
+    const config = slots[index];
+    const issue = validate(config);
     if (issue) {
       setError(issue);
       return;
     }
-    void send({ set: { index, config: slots[index], persist } });
+    const requests: Request[] = [];
+    const add = (tapCount: number, binding: Binding) =>
+      requests.push({ set: { index, tapCount, binding, persist } });
+    if (!config.tripleBinding?.behaviorId) add(3, emptyBinding());
+    if (!config.doubleBinding?.behaviorId) add(2, emptyBinding());
+    add(1, config.singleBinding!);
+    if (config.doubleBinding?.behaviorId) add(2, config.doubleBinding);
+    if (config.tripleBinding?.behaviorId) add(3, config.tripleBinding);
+    void send(requests);
   };
   const changeInterval = (persist: boolean) => {
     if (!Number.isInteger(interval) || interval < 1 || interval > 2000) {
@@ -262,7 +274,7 @@ export function TapDanceEditor() {
         selected behaviors. The last configured tap count resolves immediately;
         other counts wait for the interval or another key press.
       </p>
-      <p>Apply changes RAM only. Save writes the selected setting to flash.</p>
+      <p>Apply changes RAM only. Save writes the bindings to flash.</p>
       {locked && <p className="locked-banner">ZMK Studio is locked.</p>}
       {awaitingUnlock && (
         <div className="unlock-prompt">
@@ -300,16 +312,6 @@ export function TapDanceEditor() {
       {visible.map((index) => (
         <fieldset key={index} disabled={disabled} className="dance-slot">
           <legend>Tap dance {index + 1}</legend>
-          <label>
-            <input
-              type="checkbox"
-              checked={slots[index].enabled}
-              onChange={(event) =>
-                edit(index, { enabled: event.target.checked })
-              }
-            />{" "}
-            Enabled
-          </label>
           <p>
             Keymap binding: <code>&amp;rtd {index}</code>
           </p>
@@ -350,7 +352,7 @@ export function TapDanceEditor() {
           onClick={() => {
             const index = slots.findIndex((_, slot) => !visible.includes(slot));
             if (index < 0) return;
-            edit(index, { ...emptyConfig(), enabled: true });
+            edit(index, emptyConfig());
             setVisible((current) => [...current, index].sort((a, b) => a - b));
             setMessage("");
           }}

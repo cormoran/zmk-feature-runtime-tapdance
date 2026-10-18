@@ -8,7 +8,6 @@
 #define ZMK_RUNTIME_TAPDANCE_SLOTS_KEY "slots"
 #define ZMK_RUNTIME_TAPDANCE_TIMEOUT_MS_KEY "timeout_ms"
 struct zmk_runtime_tapdance_config {
-    bool enabled;
     struct zmk_custom_setting_behavior_value single_binding;
     struct zmk_custom_setting_behavior_value double_binding;
     struct zmk_custom_setting_behavior_value triple_binding;
@@ -16,6 +15,9 @@ struct zmk_runtime_tapdance_config {
 int zmk_runtime_tapdance_read(uint32_t index, struct zmk_runtime_tapdance_config *config);
 int zmk_runtime_tapdance_write(uint32_t index, const struct zmk_runtime_tapdance_config *config,
                                bool persist);
+int zmk_runtime_tapdance_set_binding(uint32_t index, uint32_t tap_count,
+                                     const struct zmk_custom_setting_behavior_value *binding,
+                                     bool persist);
 int zmk_runtime_tapdance_delete(uint32_t index, bool persist);
 uint32_t zmk_runtime_tapdance_timeout_ms(void);
 int zmk_runtime_tapdance_set_timeout_ms(uint32_t value, bool persist);

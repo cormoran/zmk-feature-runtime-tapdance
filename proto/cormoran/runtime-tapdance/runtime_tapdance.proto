@@ -7,7 +7,6 @@ message Binding {
     uint32 param2 = 3;
 }
 message Config {
-    bool enabled = 1;
     Binding single_binding = 2;
     Binding double_binding = 4;
     Binding triple_binding = 5;
@@ -15,8 +14,9 @@ message Config {
 message GetRequest { uint32 index = 1; }
 message SetRequest {
     uint32 index = 1;
-    Config config = 2;
-    bool persist = 3;
+    uint32 tap_count = 2;
+    Binding binding = 3;
+    bool persist = 4;
 }
 message RemoveRequest {
     uint32 index = 1;

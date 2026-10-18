@@ -108,10 +108,28 @@ beforeEach(() => {
     if (rejectWrite && !inner.get)
       response = { error: { code: -22, message: "Invalid binding" } };
     else {
-      if (inner.set) database[index] = inner.set.config!;
+      if (inner.set) {
+        const key = ["", "singleBinding", "doubleBinding", "tripleBinding"][
+          inner.set.tapCount
+        ] as keyof Config;
+        if (!key) throw new Error("Invalid test tap count");
+        const candidate = {
+          ...database[index],
+          [key]: inner.set.binding,
+        };
+        if (
+          (!candidate.singleBinding?.behaviorId &&
+            (candidate.doubleBinding?.behaviorId ||
+              candidate.tripleBinding?.behaviorId)) ||
+          (candidate.tripleBinding?.behaviorId &&
+            !candidate.doubleBinding?.behaviorId)
+        )
+          response = { error: { code: -22, message: "Invalid binding" } };
+        else database[index] = candidate;
+      }
       if (inner.remove) database[index] = blank();
       if (inner.setInterval) interval = inner.setInterval.intervalMs;
-      response = {
+      response ??= {
         state: {
           index,
           config: database[index],
@@ -166,19 +184,41 @@ it("adds and edits multiple dances, applies RAM, saves flash and deletes", async
   await user.selectOptions(screen.getByLabelText("Triple 1 behavior"), "2");
   await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
   await screen.findByText(/Applied in RAM/);
-  expect(requests.at(-1)?.set).toMatchObject({
-    index: 0,
-    persist: false,
-    config: {
-      enabled: true,
-      singleBinding: { behaviorId: 1, param1: 458755 },
-      doubleBinding: { behaviorId: 1, param1: 458756 },
-      tripleBinding: { behaviorId: 2 },
+  expect(
+    requests.filter((request) => request.set).map((request) => request.set)
+  ).toMatchObject([
+    {
+      index: 0,
+      tapCount: 1,
+      persist: false,
+      binding: { behaviorId: 1, param1: 458755 },
     },
-  });
+    {
+      index: 0,
+      tapCount: 2,
+      persist: false,
+      binding: { behaviorId: 1, param1: 458756 },
+    },
+    { index: 0, tapCount: 3, persist: false, binding: { behaviorId: 2 } },
+  ]);
   await user.click(screen.getByRole("button", { name: "Save tap dance 1" }));
   await screen.findByText("Saved to flash.");
-  expect(requests.at(-1)?.set?.persist).toBe(true);
+  expect(
+    requests
+      .filter((request) => request.set)
+      .slice(-3)
+      .map((request) => request.set?.persist)
+  ).toEqual([true, true, true]);
+  await user.selectOptions(screen.getByLabelText("Triple 1 behavior"), "0");
+  await user.selectOptions(screen.getByLabelText("Double 1 behavior"), "0");
+  await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
+  await screen.findByText(/Applied in RAM/);
+  expect(
+    requests
+      .filter((request) => request.set)
+      .slice(-3)
+      .map((request) => request.set?.tapCount)
+  ).toEqual([3, 2, 1]);
   await user.click(screen.getByRole("button", { name: "Add tap dance" }));
   expect(screen.getByLabelText("Single 2 behavior ID")).toBeInTheDocument();
   await user.click(
@@ -293,7 +333,7 @@ it("retries a rejected write once Studio unlocks", async () => {
     })
   );
   await screen.findByText("Saved to flash.");
-  expect(requests).toHaveLength(count + 1);
+  expect(requests).toHaveLength(count + 3);
 });
 
 it("shows missing subsystem guidance and handles missing context", () => {
@@ -328,7 +368,10 @@ it("clears parameters when selecting None or entering behavior ID zero", async (
   expect(screen.getByLabelText("Double 1 parameter 2")).toHaveValue(0);
   await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
   await screen.findByText(/Applied in RAM/);
-  expect(requests.at(-1)?.set?.config?.doubleBinding).toEqual({
+  expect(
+    requests.filter((request) => request.set?.tapCount === 2).at(-1)?.set
+      ?.binding
+  ).toEqual({
     behaviorId: 0,
     param1: 0,
     param2: 0,

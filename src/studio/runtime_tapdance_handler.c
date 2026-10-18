@@ -54,7 +54,6 @@ static int set_state(cormoran_runtime_tapdance_Response *resp, uint32_t index) {
     state->interval_ms = zmk_runtime_tapdance_timeout_ms();
     state->max_count = zmk_runtime_tapdance_max_count();
     state->has_config = true;
-    state->config.enabled = config.enabled;
     state->config.has_single_binding = true;
     state->config.has_double_binding = true;
     state->config.has_triple_binding = true;
@@ -85,24 +84,16 @@ static bool dispatch_request(const zmk_custom_CallRequest *raw_request,
     case cormoran_runtime_tapdance_Request_set_tag: {
         const cormoran_runtime_tapdance_SetRequest *set = &req.request_type.set;
         index = set->index;
-        if (!set->has_config) {
-            set_error(resp, -EINVAL, "Missing tapdance configuration");
+        if (!set->has_binding) {
+            set_error(resp, -EINVAL, "Missing tapdance binding");
             return true;
         }
-        const cormoran_runtime_tapdance_Config *source = &set->config;
-        struct zmk_runtime_tapdance_config config = {
-            .enabled = source->enabled,
-            .single_binding = {.behavior_id = source->single_binding.behavior_id,
-                               .param1 = source->single_binding.param1,
-                               .param2 = source->single_binding.param2},
-            .double_binding = {.behavior_id = source->double_binding.behavior_id,
-                               .param1 = source->double_binding.param1,
-                               .param2 = source->double_binding.param2},
-            .triple_binding = {.behavior_id = source->triple_binding.behavior_id,
-                               .param1 = source->triple_binding.param1,
-                               .param2 = source->triple_binding.param2},
+        const struct zmk_custom_setting_behavior_value binding = {
+            .behavior_id = set->binding.behavior_id,
+            .param1 = set->binding.param1,
+            .param2 = set->binding.param2,
         };
-        rc = zmk_runtime_tapdance_write(index, &config, set->persist);
+        rc = zmk_runtime_tapdance_set_binding(index, set->tap_count, &binding, set->persist);
         break;
     }
     case cormoran_runtime_tapdance_Request_remove_tag:

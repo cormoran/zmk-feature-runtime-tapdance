@@ -321,31 +321,37 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
             )
         )
         self.assertEqual(interval.state.interval_ms, 250)
+        key_press = self._key_press_id()
+        bindings = [
+            proto.Binding(behavior_id=key_press, param1=458756 + tap)
+            for tap in range(3)
+        ]
+        for tap_count, binding in enumerate(bindings, start=1):
+            written = self._module_call(
+                proto.Request(
+                    set=proto.SetRequest(
+                        index=0, tap_count=tap_count, binding=binding, persist=True
+                    )
+                )
+            )
+            self.assertEqual(written.WhichOneof("response_type"), "state")
         config = proto.Config(
-            enabled=True,
-            single_binding=proto.Binding(
-                behavior_id=self._key_press_id(), param1=458756
-            ),
-            double_binding=proto.Binding(),
-            triple_binding=proto.Binding(),
+            single_binding=bindings[0],
+            double_binding=bindings[1],
+            triple_binding=bindings[2],
         )
-        written = self._module_call(
-            proto.Request(set=proto.SetRequest(index=0, config=config, persist=True))
-        )
-        self.assertEqual(written.state.config, config)
         reread = self._module_call(proto.Request(get=proto.GetRequest(index=0)))
         self.assertEqual(reread.state.config, config)
         self.assertEqual(reread.state.interval_ms, 250)
+        changed_double = proto.Binding(behavior_id=key_press, param1=458760)
         ram_only = self._module_call(
             proto.Request(
-                set=proto.SetRequest(
-                    index=0,
-                    config=proto.Config(enabled=False),
-                )
+                set=proto.SetRequest(index=0, tap_count=2, binding=changed_double)
             )
         )
-        self.assertFalse(ram_only.state.config.enabled)
-        self.assertEqual(ram_only.state.config.single_binding.behavior_id, 0)
+        self.assertEqual(ram_only.state.config.single_binding, bindings[0])
+        self.assertEqual(ram_only.state.config.double_binding, changed_double)
+        self.assertEqual(ram_only.state.config.triple_binding, bindings[2])
         interval_ram_only = self._module_call(
             proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=300))
         )
@@ -353,18 +359,20 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         reread_ram_only = self._module_call(
             proto.Request(get=proto.GetRequest(index=0))
         )
-        self.assertFalse(reread_ram_only.state.config.enabled)
+        self.assertEqual(reread_ram_only.state.config.double_binding, changed_double)
         self.assertEqual(reread_ram_only.state.interval_ms, 300)
 
         shared = self._module_call(
-            proto.Request(set=proto.SetRequest(index=1, config=config))
+            proto.Request(
+                set=proto.SetRequest(index=1, tap_count=1, binding=bindings[0])
+            )
         )
         self.assertEqual(shared.WhichOneof("response_type"), "state")
-        self.assertEqual(shared.state.config, config)
+        self.assertEqual(shared.state.config.single_binding, bindings[0])
+        self.assertEqual(shared.state.config.double_binding.behavior_id, 0)
         removed = self._module_call(
             proto.Request(remove=proto.RemoveRequest(index=0, persist=True))
         )
-        self.assertFalse(removed.state.config.enabled)
         self.assertEqual(removed.state.config.single_binding.behavior_id, 0)
         self.assertEqual(removed.state.config.double_binding.behavior_id, 0)
         self.assertEqual(removed.state.config.triple_binding.behavior_id, 0)
@@ -377,19 +385,22 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         bad_requests = [
             proto.Request(),
             proto.Request(get=proto.GetRequest(index=16)),
-            proto.Request(set=proto.SetRequest(index=0)),
+            proto.Request(set=proto.SetRequest(index=0, tap_count=1)),
             proto.Request(
-                set=proto.SetRequest(index=0, config=proto.Config(enabled=True))
+                set=proto.SetRequest(index=0, tap_count=0, binding=proto.Binding())
+            ),
+            proto.Request(
+                set=proto.SetRequest(
+                    index=0, tap_count=2, binding=proto.Binding(behavior_id=1)
+                )
             ),
             proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=0)),
             proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=2001)),
             proto.Request(
                 set=proto.SetRequest(
                     index=0,
-                    config=proto.Config(
-                        enabled=True,
-                        single_binding=proto.Binding(behavior_id=0xFFFFFFFF),
-                    ),
+                    tap_count=1,
+                    binding=proto.Binding(behavior_id=0xFFFFFFFF),
                 )
             ),
         ]

@@ -7,15 +7,15 @@ The editor loads all slots once per connection. Set the global tap interval
 (1–2000 ms), then add a tap dance. The displayed slot number is the parameter
 to assign in the keymap, for example `&rtd 0`.
 
-Choose a single-tap behavior for every enabled dance. Double and triple are
+Choose a single-tap behavior to activate a dance. Double and triple are
 optional; triple requires double. The last configured tap count invokes its
 action immediately. Other counts wait for the interval or another key press.
 Behavior display names come from Studio metadata when available. Numeric IDs
 remain editable; ID 0 means no behavior. Parameters use the same unsigned
 values as Studio keymap bindings. Firmware validation errors keep your draft.
 
-**Apply** changes the selected slot or interval in RAM. **Save** also writes
-flash. Deletion has separate RAM and flash buttons. **Reload from keyboard**
+**Apply** changes the three bindings or interval in RAM. **Save** also writes
+them to flash. Deletion has separate RAM and flash buttons. **Reload from keyboard**
 replaces unsaved drafts with current device settings.
 
 ## Development

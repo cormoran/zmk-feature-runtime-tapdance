@@ -63,7 +63,7 @@ Include the behavior definition and assign slot 0 to a key:
 };
 ```
 
-An empty or disabled slot produces no key action. Only behaviors present in the
+An empty slot produces no key action. Only behaviors present in the
 firmware can be selected for a slot; `&rtd` itself is rejected as an action to
 prevent recursive dances. `CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES`
 sets the slot count (default 16); `CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_ACTIVE`
@@ -76,12 +76,12 @@ Edge and connect to the keyboard. The firmware also advertises the project's Web
 UI URL. Add a tap dance, note its zero-based slot number, and place that number
 in `&rtd <slot>` in the keymap or through Studio keymap editing.
 
-Choose a **single-tap behavior** for every enabled slot. Double and triple
+Choose a **single-tap behavior** to activate a slot. Double and triple
 behaviors are optional, but triple requires double. For example, select **Key
 Press** for all three and set parameter 1 to `458756` (`&kp A`), `458757`
 (`&kp B`), and `458758` (`&kp C`); parameter 2 is `0`. The firmware checks
-behavior IDs and parameters against ZMK metadata. Apply writes RAM only; Save
-persists to flash. Deleting a slot makes `&rtd <slot>` inactive. The global
+behavior IDs and parameters against ZMK metadata. Apply writes each binding to
+RAM; Save persists them to flash. Deleting a slot makes `&rtd <slot>` inactive. The global
 interval defaults to 200 ms and accepts 1–2000 ms.
 
 Module values also appear in the custom-settings subsystem for import/export.

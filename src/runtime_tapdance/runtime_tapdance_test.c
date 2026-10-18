@@ -92,7 +92,6 @@ static void run(struct k_work *work) {
     uint32_t kp = zmk_behavior_get_local_id("key_press");
     __ASSERT(kp && kp != UINT16_MAX, "key_press local id missing");
     struct zmk_runtime_tapdance_config cfg = {
-        .enabled = true,
         .single_binding = {kp, A, 0},
         .double_binding = {kp, B, 0},
         .triple_binding = {kp, C, 0},
@@ -115,6 +114,19 @@ static void run(struct k_work *work) {
     bad = cfg;
     bad.single_binding.behavior_id = zmk_behavior_get_local_id("runtime_tapdance");
     __ASSERT(zmk_runtime_tapdance_write(0, &bad, false) == -ELOOP, "recursive dance");
+    const struct zmk_custom_setting_behavior_value empty = {0};
+    const struct zmk_custom_setting_behavior_value alternate = {kp, D, 0};
+    struct zmk_runtime_tapdance_config updated;
+    __ASSERT(zmk_runtime_tapdance_set_binding(0, 0, &alternate, false) == -EINVAL,
+             "invalid tap count");
+    __ASSERT(zmk_runtime_tapdance_set_binding(0, 2, &empty, false) == -EINVAL,
+             "double required by triple");
+    __ASSERT(zmk_runtime_tapdance_set_binding(0, 2, &alternate, false) == 0, "edit one binding");
+    __ASSERT(zmk_runtime_tapdance_read(0, &updated) == 0 && updated.single_binding.param1 == A &&
+                 updated.double_binding.param1 == D && updated.triple_binding.param1 == C,
+             "other bindings preserved");
+    __ASSERT(zmk_runtime_tapdance_set_binding(0, 2, &cfg.double_binding, false) == 0,
+             "restore double");
     struct zmk_runtime_tapdance_config same = cfg;
     same.single_binding.param1 = E;
     same.double_binding.param1 = F;
@@ -198,8 +210,8 @@ static void run(struct k_work *work) {
     interrupt();
     EXPECT();
 
-    cfg = (struct zmk_runtime_tapdance_config){
-        .enabled = true, .single_binding = {kp, A, 0}, .double_binding = {kp, B, 0}};
+    cfg = (struct zmk_runtime_tapdance_config){.single_binding = {kp, A, 0},
+                                               .double_binding = {kp, B, 0}};
     __ASSERT(zmk_runtime_tapdance_write(0, &cfg, false) == 0, "timer config");
     timestamp = k_uptime_get();
     position(0, true, 0);
