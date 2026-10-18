@@ -305,22 +305,35 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         self.fail("Key Press behavior not advertised by Studio")
 
     def test_runtime_configuration_crud_over_usb(self):
-        """Round-trip slot config and globals, including real validation errors."""
+        """Create named entries, edit one binding, and exercise Save/Discard."""
         proto = self.template_pb2
-        initial = self._module_call(proto.Request(get=proto.GetRequest(index=0)))
-        self.assertEqual(initial.WhichOneof("response_type"), "state")
-        self.assertEqual(initial.state.max_count, 16)
-        self.assertTrue(initial.state.HasField("config"))
-        self.assertTrue(initial.state.config.HasField("single_binding"))
-        self.assertTrue(initial.state.config.HasField("double_binding"))
-        self.assertTrue(initial.state.config.HasField("triple_binding"))
+        global_state = getattr(
+            self._module_call(proto.Request(get_global=proto.GetGlobalRequest())),
+            "global",
+        )
+        self.assertEqual(global_state.api_version, 2)
+        self.assertEqual(global_state.max_entries, 16)
+        self.assertEqual(global_state.used_entries, 0)
+        self.assertGreater(global_state.pool_bytes_total, 0)
+        self.assertEqual(global_state.pool_bytes_used, 0)
+        initial_list = self._module_call(proto.Request(list=proto.ListRequest())).list
+        self.assertEqual(len(initial_list.entries), 0)
+        created = self._module_call(
+            proto.Request(create=proto.CreateRequest(name="Alpha"))
+        )
+        self.assertEqual(created.WhichOneof("response_type"), "state")
+        self.assertEqual(created.state.index, 0)
+        self.assertEqual(created.state.name, "Alpha")
+        self.assertTrue(created.state.has_unsaved_changes)
+        self.assertTrue(created.state.HasField("config"))
+        self.assertTrue(created.state.config.HasField("single_binding"))
 
         interval = self._module_call(
             proto.Request(
                 set_interval=proto.SetIntervalRequest(interval_ms=250, persist=True)
             )
         )
-        self.assertEqual(interval.state.interval_ms, 250)
+        self.assertEqual(getattr(interval, "global").interval_ms, 250)
         key_press = self._key_press_id()
         bindings = [
             proto.Binding(behavior_id=key_press, param1=458756 + tap)
@@ -343,6 +356,11 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         reread = self._module_call(proto.Request(get=proto.GetRequest(index=0)))
         self.assertEqual(reread.state.config, config)
         self.assertEqual(reread.state.interval_ms, 250)
+        renamed = self._module_call(
+            proto.Request(rename=proto.RenameRequest(index=0, name="Renamed"))
+        )
+        self.assertEqual(renamed.state.index, 0)
+        self.assertEqual(renamed.state.name, "Renamed")
         changed_double = proto.Binding(behavior_id=key_press, param1=458760)
         ram_only = self._module_call(
             proto.Request(
@@ -355,27 +373,56 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         interval_ram_only = self._module_call(
             proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=300))
         )
-        self.assertEqual(interval_ram_only.state.interval_ms, 300)
+        self.assertEqual(getattr(interval_ram_only, "global").interval_ms, 300)
         reread_ram_only = self._module_call(
             proto.Request(get=proto.GetRequest(index=0))
         )
         self.assertEqual(reread_ram_only.state.config.double_binding, changed_double)
         self.assertEqual(reread_ram_only.state.interval_ms, 300)
+        saved = self._module_call(proto.Request(save=proto.SaveRequest()))
+        self.assertEqual(saved.WhichOneof("response_type"), "status")
+        self.assertGreater(saved.status.affected_count, 0)
 
-        shared = self._module_call(
+        self._module_call(
             proto.Request(
-                set=proto.SetRequest(index=1, tap_count=1, binding=bindings[0])
+                set=proto.SetRequest(index=0, tap_count=2, binding=bindings[1])
             )
         )
-        self.assertEqual(shared.WhichOneof("response_type"), "state")
-        self.assertEqual(shared.state.config.single_binding, bindings[0])
-        self.assertEqual(shared.state.config.double_binding.behavior_id, 0)
-        removed = self._module_call(
-            proto.Request(remove=proto.RemoveRequest(index=0, persist=True))
+        temporary = self._module_call(
+            proto.Request(create=proto.CreateRequest(name="Temporary"))
         )
-        self.assertEqual(removed.state.config.single_binding.behavior_id, 0)
-        self.assertEqual(removed.state.config.double_binding.behavior_id, 0)
-        self.assertEqual(removed.state.config.triple_binding.behavior_id, 0)
+        self.assertEqual(temporary.state.index, 1)
+        discarded = self._module_call(proto.Request(discard=proto.DiscardRequest()))
+        self.assertEqual(discarded.WhichOneof("response_type"), "status")
+        self.assertEqual(
+            self._module_call(
+                proto.Request(get=proto.GetRequest(index=0))
+            ).state.config.double_binding,
+            changed_double,
+        )
+        self.assertEqual(
+            self._module_call(proto.Request(get=proto.GetRequest(index=1))).WhichOneof(
+                "response_type"
+            ),
+            "error",
+        )
+
+        second = self._module_call(
+            proto.Request(create=proto.CreateRequest(name="Beta"))
+        )
+        self.assertEqual(second.state.index, 2)
+        listed = self._module_call(proto.Request(list=proto.ListRequest())).list
+        self.assertEqual([item.index for item in listed.entries], [0, 2])
+        self.assertEqual([item.name for item in listed.entries], ["Renamed", "Beta"])
+        removed = self._module_call(proto.Request(delete=proto.DeleteRequest(index=0)))
+        self.assertEqual(removed.status.affected_count, 1)
+        self.assertEqual(
+            self._module_call(proto.Request(get=proto.GetRequest(index=0))).WhichOneof(
+                "response_type"
+            ),
+            "error",
+        )
+        self._module_call(proto.Request(delete=proto.DeleteRequest(index=2)))
         self._module_call(
             proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=200))
         )
@@ -410,6 +457,37 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
                 self.assertEqual(result.WhichOneof("response_type"), "error")
                 self.assertLess(result.error.code, 0)
                 self.assertTrue(result.error.message)
+
+    def test_runtime_paged_list(self):
+        proto = self.template_pb2
+        ids = []
+        for number in range(6):
+            result = self._module_call(
+                proto.Request(create=proto.CreateRequest(name=f"Paged {number}"))
+            )
+            self.assertEqual(result.WhichOneof("response_type"), "state")
+            ids.append(result.state.index)
+        first = self._module_call(proto.Request(list=proto.ListRequest())).list
+        self.assertEqual([item.index for item in first.entries], ids[:4])
+        self.assertTrue(first.has_more)
+        second = self._module_call(
+            proto.Request(
+                list=proto.ListRequest(has_after_id=True, after_id=first.next_after_id)
+            )
+        ).list
+        self.assertEqual([item.index for item in second.entries], ids[4:])
+        self.assertFalse(second.has_more)
+        duplicate = self._module_call(
+            proto.Request(create=proto.CreateRequest(name="Paged 0"))
+        )
+        self.assertEqual(duplicate.error.code, -17)
+        for entry_id in ids:
+            self.assertEqual(
+                self._module_call(
+                    proto.Request(delete=proto.DeleteRequest(index=entry_id))
+                ).status.affected_count,
+                1,
+            )
 
 
 if __name__ == "__main__":

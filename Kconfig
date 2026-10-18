@@ -3,6 +3,7 @@ config ZMK_RUNTIME_TAPDANCE
     select SETTINGS
     select ZMK_CUSTOM_SETTINGS
     select ZMK_CUSTOM_SETTINGS_ARRAY
+    select ZMK_CUSTOM_SETTINGS_KEYSPACE
     select ZMK_BEHAVIOR_LOCAL_IDS
     select ZMK_BEHAVIOR_METADATA
 
@@ -12,6 +13,16 @@ config ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES
     int "Maximum runtime tap dances"
     default 16
     range 1 16
+
+config ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN
+    int "Maximum tap dance name length in UTF-8 bytes"
+    default 24
+    range 1 24
+
+config ZMK_RUNTIME_TAPDANCE_POOL_BYTES
+    int "Shared runtime tap dance name and binding pool size"
+    default 1024
+    range 128 4096
 
 config ZMK_RUNTIME_TAPDANCE_MAX_ACTIVE
     int "Maximum simultaneous runtime tap dances"

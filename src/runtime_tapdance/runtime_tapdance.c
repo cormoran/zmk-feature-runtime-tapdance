@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 #include <errno.h>
 #include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/byteorder.h>
@@ -14,17 +17,32 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #define COUNT CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES
-#define PACKED_SIZE 37
+#define PACKED_SIZE (2 + CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN + 36)
+#define KEY_SIZE (sizeof(ZMK_RUNTIME_TAPDANCE_KEY_PREFIX) + 10)
+#define LEGACY_PACKED_SIZE 37
 BUILD_ASSERT(PACKED_SIZE <= CONFIG_ZMK_CUSTOM_SETTINGS_VALUE_MAX_SIZE);
-#define SLOT_DEFAULT(i, _) {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES, .size = 0}
-static const struct zmk_custom_setting_value defaults[COUNT] = {LISTIFY(COUNT, SLOT_DEFAULT, (, ))};
-ZMK_CUSTOM_SETTING_ARRAY_DEFINE(runtime_tapdance_slots, ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
-                                ZMK_RUNTIME_TAPDANCE_SLOTS_KEY, ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES,
-                                COUNT, COUNT, defaults,
-                                ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC,
+/* Keep the old array registered for one-way migration of pre-pool settings. */
+#define LEGACY_SLOT_DEFAULT(i, _) {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES, .size = 0}
+static const struct zmk_custom_setting_value legacy_defaults[COUNT] = {
+    LISTIFY(COUNT, LEGACY_SLOT_DEFAULT, (, ))};
+ZMK_CUSTOM_SETTING_ARRAY_DEFINE(runtime_tapdance_legacy_slots, ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
+                                "slots", ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES, COUNT, COUNT,
+                                legacy_defaults, ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC,
                                 ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
                                 ZMK_CUSTOM_SETTING_PERMISSION_SECURE,
                                 ZMK_CUSTOM_SETTING_NO_CONSTRAINT);
+ZMK_CUSTOM_SETTING_KEYSPACE_DEFINE_WITH_POOL_SIZE(
+    runtime_tapdances, ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID, ZMK_RUNTIME_TAPDANCE_KEY_PREFIX,
+    ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES, PACKED_SIZE, KEY_SIZE, COUNT,
+    CONFIG_ZMK_RUNTIME_TAPDANCE_POOL_BYTES, ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC,
+    ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE, ZMK_CUSTOM_SETTING_PERMISSION_SECURE,
+    ZMK_CUSTOM_SETTING_NO_CONSTRAINT);
+ZMK_CUSTOM_SETTING_DEFINE(runtime_tapdance_next_id, ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
+                          ZMK_RUNTIME_TAPDANCE_NEXT_ID_KEY, ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+                          ZMK_CUSTOM_SETTING_VALUE_INT32(0),
+                          ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC,
+                          ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+                          ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_NO_CONSTRAINT);
 ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
     runtime_tapdance_timeout, ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
     ZMK_RUNTIME_TAPDANCE_TIMEOUT_MS_KEY, ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
@@ -76,37 +94,82 @@ static int validate(const struct zmk_runtime_tapdance_config *config) {
     return 0;
 }
 
-static int read_raw(uint32_t index, struct zmk_runtime_tapdance_config *config) {
-    if (!config || index >= COUNT) {
-        return -EINVAL;
+static int make_key(uint32_t index, char key[KEY_SIZE]) {
+    if (index > INT32_MAX) {
+        return -ERANGE;
     }
-    struct zmk_custom_setting_value value;
-    int ret = zmk_custom_setting_read_array_by_key(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
-                                                   ZMK_RUNTIME_TAPDANCE_SLOTS_KEY, index, &value);
-    *config = (struct zmk_runtime_tapdance_config){0};
-    if (ret == -ENOENT) {
-        return 0;
+    int n = snprintf(key, KEY_SIZE, "%s%u", ZMK_RUNTIME_TAPDANCE_KEY_PREFIX, index);
+    return n > 0 && n < KEY_SIZE ? 0 : -ENAMETOOLONG;
+}
+
+static const struct zmk_custom_setting *find_entry(uint32_t index) {
+    char key[KEY_SIZE];
+    if (make_key(index, key) < 0) {
+        return NULL;
     }
+    return zmk_custom_setting_keyspace_find(&runtime_tapdances, key);
+}
+
+static int decode_entry(const struct zmk_custom_setting *entry,
+                        struct zmk_runtime_tapdance_config *config, char *name, size_t name_size) {
+    uint8_t packed[PACKED_SIZE];
+    size_t size = 0;
+    int ret = zmk_custom_setting_read_into(entry, packed, sizeof(packed), &size, NULL);
     if (ret < 0) {
         return ret;
     }
-    if (value.type != ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES) {
+    if (size < 38 || packed[0] != 4 || packed[1] == 0 ||
+        packed[1] > CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN || size != (size_t)packed[1] + 38) {
         return -EINVAL;
     }
-    if (!value.size) {
-        return 0;
+    if (name) {
+        if (name_size <= packed[1]) {
+            return -EMSGSIZE;
+        }
+        memcpy(name, packed + 2, packed[1]);
+        name[packed[1]] = '\0';
     }
-    const uint8_t *p = value.bytes_value;
-    if (value.size != PACKED_SIZE || p[0] != 3) {
-        return -EINVAL;
+    if (config) {
+        const uint8_t *p = packed + 2 + packed[1];
+        config->single_binding = (struct zmk_custom_setting_behavior_value){
+            sys_get_le32(p), sys_get_le32(p + 4), sys_get_le32(p + 8)};
+        config->double_binding = (struct zmk_custom_setting_behavior_value){
+            sys_get_le32(p + 12), sys_get_le32(p + 16), sys_get_le32(p + 20)};
+        config->triple_binding = (struct zmk_custom_setting_behavior_value){
+            sys_get_le32(p + 24), sys_get_le32(p + 28), sys_get_le32(p + 32)};
+        return validate(config);
     }
-    config->single_binding = (struct zmk_custom_setting_behavior_value){
-        sys_get_le32(p + 1), sys_get_le32(p + 5), sys_get_le32(p + 9)};
-    config->double_binding = (struct zmk_custom_setting_behavior_value){
-        sys_get_le32(p + 13), sys_get_le32(p + 17), sys_get_le32(p + 21)};
-    config->triple_binding = (struct zmk_custom_setting_behavior_value){
-        sys_get_le32(p + 25), sys_get_le32(p + 29), sys_get_le32(p + 33)};
-    return validate(config);
+    return 0;
+}
+
+static int encode_entry(const char *name, const struct zmk_runtime_tapdance_config *config,
+                        struct zmk_custom_setting_value *value) {
+    size_t name_len = strlen(name);
+    if (name_len == 0 || name_len > CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN) {
+        return -EMSGSIZE;
+    }
+    *value = (struct zmk_custom_setting_value){.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES,
+                                               .size = 38 + name_len};
+    uint8_t *p = value->bytes_value;
+    p[0] = 4;
+    p[1] = name_len;
+    memcpy(p + 2, name, name_len);
+    p += 2 + name_len;
+    sys_put_le32(config->single_binding.behavior_id, p);
+    sys_put_le32(config->single_binding.param1, p + 4);
+    sys_put_le32(config->single_binding.param2, p + 8);
+    sys_put_le32(config->double_binding.behavior_id, p + 12);
+    sys_put_le32(config->double_binding.param1, p + 16);
+    sys_put_le32(config->double_binding.param2, p + 20);
+    sys_put_le32(config->triple_binding.behavior_id, p + 24);
+    sys_put_le32(config->triple_binding.param1, p + 28);
+    sys_put_le32(config->triple_binding.param2, p + 32);
+    return 0;
+}
+
+static int read_raw(uint32_t index, struct zmk_runtime_tapdance_config *config) {
+    const struct zmk_custom_setting *entry = find_entry(index);
+    return !config ? -EINVAL : !entry ? -ENOENT : decode_entry(entry, config, NULL, 0);
 }
 
 int zmk_runtime_tapdance_read(uint32_t index, struct zmk_runtime_tapdance_config *config) {
@@ -118,31 +181,28 @@ int zmk_runtime_tapdance_read(uint32_t index, struct zmk_runtime_tapdance_config
 
 static int write_raw_locked(uint32_t index, const struct zmk_runtime_tapdance_config *config,
                             bool persist) {
-    struct zmk_custom_setting_value value = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES,
-                                             .size = PACKED_SIZE};
-    uint8_t *p = value.bytes_value;
-    p[0] = 3;
-    sys_put_le32(config->single_binding.behavior_id, p + 1);
-    sys_put_le32(config->single_binding.param1, p + 5);
-    sys_put_le32(config->single_binding.param2, p + 9);
-    sys_put_le32(config->double_binding.behavior_id, p + 13);
-    sys_put_le32(config->double_binding.param1, p + 17);
-    sys_put_le32(config->double_binding.param2, p + 21);
-    sys_put_le32(config->triple_binding.behavior_id, p + 25);
-    sys_put_le32(config->triple_binding.param1, p + 29);
-    sys_put_le32(config->triple_binding.param2, p + 33);
-    const struct zmk_custom_setting *slot = zmk_custom_setting_find_array_element(
-        ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID, ZMK_RUNTIME_TAPDANCE_SLOTS_KEY, index);
-    return slot ? zmk_custom_setting_write_array_element(
-                      slot, &value, MAX(zmk_custom_setting_array_size(slot), index + 1),
-                      persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST
-                              : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY)
-                : -ENOENT;
+    const struct zmk_custom_setting *entry = find_entry(index);
+    if (!entry) {
+        return -ENOENT;
+    }
+    char name[CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN + 1];
+    int ret = decode_entry(entry, NULL, name, sizeof(name));
+    if (ret < 0) {
+        return ret;
+    }
+    struct zmk_custom_setting_value value;
+    ret = encode_entry(name, config, &value);
+    if (ret < 0) {
+        return ret;
+    }
+    return zmk_custom_setting_write(entry, &value,
+                                    persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST
+                                            : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
 }
 
 int zmk_runtime_tapdance_write(uint32_t index, const struct zmk_runtime_tapdance_config *config,
                                bool persist) {
-    if (!config || index >= COUNT) {
+    if (!config) {
         return -EINVAL;
     }
     int ret = validate(config);
@@ -158,7 +218,7 @@ int zmk_runtime_tapdance_write(uint32_t index, const struct zmk_runtime_tapdance
 int zmk_runtime_tapdance_set_binding(uint32_t index, uint32_t tap_count,
                                      const struct zmk_custom_setting_behavior_value *binding,
                                      bool persist) {
-    if (!binding || index >= COUNT || tap_count < 1 || tap_count > 3) {
+    if (!binding || tap_count < 1 || tap_count > 3) {
         return -EINVAL;
     }
     k_mutex_lock(&tapdance_lock, K_FOREVER);
@@ -180,11 +240,267 @@ int zmk_runtime_tapdance_set_binding(uint32_t index, uint32_t tap_count,
 }
 
 int zmk_runtime_tapdance_delete(uint32_t index, bool persist) {
-    const struct zmk_runtime_tapdance_config empty = {0};
-    return zmk_runtime_tapdance_write(index, &empty, persist);
+    ARG_UNUSED(persist);
+    char key[KEY_SIZE];
+    int ret = make_key(index, key);
+    if (ret < 0) {
+        return ret;
+    }
+    k_mutex_lock(&tapdance_lock, K_FOREVER);
+    ret = zmk_custom_setting_keyspace_delete(&runtime_tapdances, key);
+    k_mutex_unlock(&tapdance_lock);
+    return ret;
 }
 
 uint32_t zmk_runtime_tapdance_max_count(void) { return COUNT; }
+
+static int id_from_entry(const struct zmk_custom_setting *entry, uint32_t *id) {
+    const char *key = zmk_custom_setting_public_key(entry);
+    const size_t prefix_len = sizeof(ZMK_RUNTIME_TAPDANCE_KEY_PREFIX) - 1;
+    if (!key || strncmp(key, ZMK_RUNTIME_TAPDANCE_KEY_PREFIX, prefix_len) != 0) {
+        return -EINVAL;
+    }
+    const char *digits = key + prefix_len;
+    if (!*digits) {
+        return -EINVAL;
+    }
+    uint32_t result = 0;
+    for (const char *p = digits; *p; p++) {
+        if (*p < '0' || *p > '9' || result > (INT32_MAX - (*p - '0')) / 10) {
+            return -EINVAL;
+        }
+        result = result * 10 + (*p - '0');
+    }
+    *id = result;
+    return 0;
+}
+
+static bool name_exists_locked(const char *name, uint32_t except_id) {
+    for (uint32_t i = 0; i < COUNT; i++) {
+        if (!runtime_tapdances.slots[i].in_use) {
+            continue;
+        }
+        const struct zmk_custom_setting *entry = &runtime_tapdances.slots[i].setting;
+        uint32_t id;
+        char current[CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN + 1];
+        if (id_from_entry(entry, &id) == 0 && id != except_id &&
+            decode_entry(entry, NULL, current, sizeof(current)) == 0 &&
+            strcmp(current, name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int zmk_runtime_tapdance_create(const char *name, bool persist, uint32_t *index) {
+    if (!name || !index || !name[0]) {
+        return -EINVAL;
+    }
+    size_t length = strlen(name);
+    if (length > CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN) {
+        return -EMSGSIZE;
+    }
+    k_mutex_lock(&tapdance_lock, K_FOREVER);
+    if (name_exists_locked(name, UINT32_MAX)) {
+        k_mutex_unlock(&tapdance_lock);
+        return -EEXIST;
+    }
+    bool free_slot = false;
+    for (uint32_t i = 0; i < COUNT; i++) {
+        free_slot |= !runtime_tapdances.slots[i].in_use;
+    }
+    if (!free_slot) {
+        k_mutex_unlock(&tapdance_lock);
+        return -ENOSPC;
+    }
+    struct zmk_custom_setting_value next;
+    int ret = zmk_custom_setting_read_by_key(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
+                                             ZMK_RUNTIME_TAPDANCE_NEXT_ID_KEY, &next);
+    if (ret < 0 || next.type != ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32 || next.int32_value < 0 ||
+        next.int32_value == INT32_MAX) {
+        k_mutex_unlock(&tapdance_lock);
+        return ret < 0 ? ret : -ENOSPC;
+    }
+    uint32_t id = next.int32_value;
+    char key[KEY_SIZE];
+    ret = make_key(id, key);
+    if (ret == 0) {
+        struct zmk_custom_setting_value value;
+        const struct zmk_runtime_tapdance_config empty = {0};
+        ret = encode_entry(name, &empty, &value);
+        if (ret == 0) {
+            /* Persist the high-water mark even for RAM-only entries so a stale
+             * keymap reference can never attach to a later entry. */
+            next.int32_value++;
+            ret = zmk_custom_setting_write_by_key(
+                ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID, ZMK_RUNTIME_TAPDANCE_NEXT_ID_KEY, &next,
+                IS_ENABLED(CONFIG_SETTINGS_NONE) ? ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY
+                                                 : ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST);
+        }
+        if (ret == 0) {
+            ret = zmk_custom_setting_keyspace_create(&runtime_tapdances, key, &value,
+                                                     persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST
+                                                             : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY,
+                                                     NULL);
+        }
+    }
+    if (ret == 0) {
+        *index = id;
+    }
+    k_mutex_unlock(&tapdance_lock);
+    return ret;
+}
+
+int zmk_runtime_tapdance_rename(uint32_t index, const char *name, bool persist) {
+    if (!name || !name[0]) {
+        return -EINVAL;
+    }
+    size_t length = strlen(name);
+    if (length > CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN) {
+        return -EMSGSIZE;
+    }
+    k_mutex_lock(&tapdance_lock, K_FOREVER);
+    const struct zmk_custom_setting *entry = find_entry(index);
+    int ret = !entry ? -ENOENT : name_exists_locked(name, index) ? -EEXIST : 0;
+    if (ret == 0) {
+        struct zmk_runtime_tapdance_config config;
+        struct zmk_custom_setting_value value;
+        ret = decode_entry(entry, &config, NULL, 0);
+        if (ret == 0) {
+            ret = encode_entry(name, &config, &value);
+        }
+        if (ret == 0) {
+            ret = zmk_custom_setting_write(entry, &value,
+                                           persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST
+                                                   : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+        }
+    }
+    k_mutex_unlock(&tapdance_lock);
+    return ret;
+}
+
+int zmk_runtime_tapdance_name(uint32_t index, char *name, size_t capacity,
+                              bool *has_unsaved_changes) {
+    if (!name) {
+        return -EINVAL;
+    }
+    k_mutex_lock(&tapdance_lock, K_FOREVER);
+    const struct zmk_custom_setting *entry = find_entry(index);
+    int ret = entry ? decode_entry(entry, NULL, name, capacity) : -ENOENT;
+    if (ret == 0 && has_unsaved_changes) {
+        *has_unsaved_changes = zmk_custom_setting_has_unsaved_value(entry);
+    }
+    k_mutex_unlock(&tapdance_lock);
+    return ret;
+}
+
+int zmk_runtime_tapdance_for_each(zmk_runtime_tapdance_iter_cb_t cb, void *context) {
+    if (!cb) {
+        return -EINVAL;
+    }
+    k_mutex_lock(&tapdance_lock, K_FOREVER);
+    int ret = 0;
+    for (uint32_t i = 0; i < COUNT && ret == 0; i++) {
+        if (!runtime_tapdances.slots[i].in_use) {
+            continue;
+        }
+        const struct zmk_custom_setting *entry = &runtime_tapdances.slots[i].setting;
+        uint32_t id;
+        char name[CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN + 1];
+        ret = id_from_entry(entry, &id);
+        if (ret == 0) {
+            ret = decode_entry(entry, NULL, name, sizeof(name));
+        }
+        if (ret == 0) {
+            ret = cb(id, name, zmk_custom_setting_has_unsaved_value(entry), context);
+        }
+    }
+    k_mutex_unlock(&tapdance_lock);
+    return ret;
+}
+
+uint32_t zmk_runtime_tapdance_used_count(void) {
+    uint32_t count = 0;
+    k_mutex_lock(&tapdance_lock, K_FOREVER);
+    for (uint32_t i = 0; i < COUNT; i++) {
+        count += runtime_tapdances.slots[i].in_use;
+    }
+    k_mutex_unlock(&tapdance_lock);
+    return count;
+}
+
+size_t zmk_runtime_tapdance_pool_total(void) { return CONFIG_ZMK_RUNTIME_TAPDANCE_POOL_BYTES; }
+size_t zmk_runtime_tapdance_pool_used(void) {
+    return zmk_custom_setting_large_pool_used(runtime_tapdances.large_pool);
+}
+
+bool zmk_runtime_tapdance_has_unsaved_changes(void) {
+    const struct zmk_custom_setting *interval = zmk_custom_setting_find(
+        ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID, ZMK_RUNTIME_TAPDANCE_TIMEOUT_MS_KEY);
+    if (interval && zmk_custom_setting_has_unsaved_value(interval)) {
+        return true;
+    }
+    bool dirty = false;
+    k_mutex_lock(&tapdance_lock, K_FOREVER);
+    for (uint32_t i = 0; i < COUNT; i++) {
+        if (runtime_tapdances.slots[i].in_use &&
+            zmk_custom_setting_has_unsaved_value(&runtime_tapdances.slots[i].setting)) {
+            dirty = true;
+            break;
+        }
+    }
+    k_mutex_unlock(&tapdance_lock);
+    return dirty;
+}
+
+int zmk_runtime_tapdance_save(uint32_t *affected_count) {
+    uint32_t interval_count = 0, entry_count = 0;
+    int ret =
+        zmk_custom_settings_save_scope(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
+                                       ZMK_RUNTIME_TAPDANCE_TIMEOUT_MS_KEY, NULL, &interval_count);
+    if (ret == 0) {
+        ret = zmk_custom_settings_save_scope(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID, NULL,
+                                             ZMK_RUNTIME_TAPDANCE_KEY_PREFIX, &entry_count);
+    }
+    if (affected_count) {
+        *affected_count = interval_count + entry_count;
+    }
+    return ret;
+}
+
+int zmk_runtime_tapdance_discard(uint32_t *affected_count) {
+    uint32_t deleted = 0;
+    k_mutex_lock(&tapdance_lock, K_FOREVER);
+    for (uint32_t i = 0; i < COUNT; i++) {
+        if (!runtime_tapdances.slots[i].in_use) {
+            continue;
+        }
+        const struct zmk_custom_setting *entry = &runtime_tapdances.slots[i].setting;
+        if (!(entry->state->flags & ZMK_CUSTOM_SETTING_STATE_HAS_PERSISTENT)) {
+            char key[KEY_SIZE];
+            snprintf(key, sizeof(key), "%s", zmk_custom_setting_public_key(entry));
+            int ret = zmk_custom_setting_keyspace_delete(&runtime_tapdances, key);
+            if (ret < 0) {
+                k_mutex_unlock(&tapdance_lock);
+                return ret;
+            }
+            deleted++;
+        }
+    }
+    uint32_t interval_count = 0, entry_count = 0;
+    int ret = zmk_custom_settings_discard_scope(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
+                                                ZMK_RUNTIME_TAPDANCE_TIMEOUT_MS_KEY, NULL,
+                                                &interval_count);
+    if (ret == 0) {
+        ret = zmk_custom_settings_discard_scope(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID, NULL,
+                                                ZMK_RUNTIME_TAPDANCE_KEY_PREFIX, &entry_count);
+    }
+    k_mutex_unlock(&tapdance_lock);
+    if (affected_count) {
+        *affected_count = deleted + interval_count + entry_count;
+    }
+    return ret;
+}
 
 uint32_t zmk_runtime_tapdance_timeout_ms(void) {
     struct zmk_custom_setting_value value;
@@ -206,6 +522,102 @@ int zmk_runtime_tapdance_set_timeout_ms(uint32_t value, bool persist) {
         ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID, ZMK_RUNTIME_TAPDANCE_TIMEOUT_MS_KEY, &setting,
         persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
 }
+
+static int migrate_legacy_config(uint32_t index, const struct zmk_runtime_tapdance_config *config) {
+    if (find_entry(index)) {
+        return 0;
+    }
+    char key[KEY_SIZE];
+    char name[CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN + 1];
+    int ret = make_key(index, key);
+    if (ret < 0) {
+        return ret;
+    }
+    snprintf(name, sizeof(name), "Tapdance %u", index);
+    struct zmk_custom_setting_value value;
+    ret = encode_entry(name, config, &value);
+    if (ret < 0) {
+        return ret;
+    }
+    return zmk_custom_setting_keyspace_create(&runtime_tapdances, key, &value,
+                                              ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST, NULL);
+}
+
+static int legacy_initialized(const zmk_event_t *event) {
+    ARG_UNUSED(event);
+    uint32_t highest_id_plus_one = 0;
+    bool saw_legacy = false;
+    for (uint32_t index = 0; index < COUNT; index++) {
+        struct zmk_custom_setting_value value;
+        int ret = zmk_custom_setting_read_array_by_key(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID, "slots",
+                                                       index, &value);
+        if (ret == -ENOENT || (ret == 0 && value.size == 0)) {
+            continue;
+        }
+        if (ret < 0 || value.type != ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES ||
+            value.size != LEGACY_PACKED_SIZE || value.bytes_value[0] != 3) {
+            LOG_ERR("Invalid legacy tap dance slot %u", index);
+            return ZMK_EV_EVENT_BUBBLE;
+        }
+        const uint8_t *p = value.bytes_value + 1;
+        struct zmk_runtime_tapdance_config config = {
+            .single_binding = {sys_get_le32(p), sys_get_le32(p + 4), sys_get_le32(p + 8)},
+            .double_binding = {sys_get_le32(p + 12), sys_get_le32(p + 16), sys_get_le32(p + 20)},
+            .triple_binding = {sys_get_le32(p + 24), sys_get_le32(p + 28), sys_get_le32(p + 32)},
+        };
+        if (validate(&config) < 0) {
+            LOG_ERR("Invalid legacy tap dance binding in slot %u", index);
+            return ZMK_EV_EVENT_BUBBLE;
+        }
+        if (!config.single_binding.behavior_id) {
+            continue;
+        }
+        ret = migrate_legacy_config(index, &config);
+        if (ret < 0) {
+            LOG_ERR("Legacy tap dance migration failed at slot %u: %d", index, ret);
+            return ZMK_EV_EVENT_BUBBLE;
+        }
+        saw_legacy = true;
+        highest_id_plus_one = index + 1;
+    }
+    for (uint32_t i = 0; i < COUNT; i++) {
+        if (!runtime_tapdances.slots[i].in_use) {
+            continue;
+        }
+        uint32_t id;
+        if (id_from_entry(&runtime_tapdances.slots[i].setting, &id) == 0 &&
+            id + 1 > highest_id_plus_one) {
+            highest_id_plus_one = id + 1;
+        }
+    }
+    struct zmk_custom_setting_value next;
+    int ret = zmk_custom_setting_read_by_key(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
+                                             ZMK_RUNTIME_TAPDANCE_NEXT_ID_KEY, &next);
+    if (ret == 0 && next.type == ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32 && next.int32_value >= 0 &&
+        highest_id_plus_one > (uint32_t)next.int32_value) {
+        next.int32_value = highest_id_plus_one;
+        ret = zmk_custom_setting_write_by_key(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
+                                              ZMK_RUNTIME_TAPDANCE_NEXT_ID_KEY, &next,
+                                              ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST);
+        if (ret < 0) {
+            LOG_ERR("Could not advance tap dance ID counter: %d", ret);
+            return ZMK_EV_EVENT_BUBBLE;
+        }
+    }
+    if (saw_legacy) {
+        const struct zmk_custom_setting *slots =
+            zmk_custom_setting_find(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID, "slots");
+        if (slots) {
+            ret = zmk_custom_setting_reset(slots);
+            if (ret < 0) {
+                LOG_ERR("Could not erase migrated tap dance slots: %d", ret);
+            }
+        }
+    }
+    return ZMK_EV_EVENT_BUBBLE;
+}
+ZMK_LISTENER(runtime_tapdance_legacy_migration, legacy_initialized);
+ZMK_SUBSCRIPTION(runtime_tapdance_legacy_migration, zmk_custom_settings_initialized);
 
 #if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 

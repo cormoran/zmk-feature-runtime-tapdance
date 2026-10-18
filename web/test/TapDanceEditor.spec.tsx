@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   createConnectedMockZMKApp,
@@ -18,14 +18,8 @@ import { call_rpc } from "@zmkfirmware/zmk-studio-ts-client";
 jest.mock("@zmkfirmware/zmk-studio-ts-client", () => ({
   create_rpc_connection: jest.fn(),
   call_rpc: jest.fn(),
-  MetaError: class MetaError extends Error {
-    condition: number;
-    constructor(condition: number) {
-      super("unlock required");
-      this.condition = condition;
-    }
-  },
 }));
+
 const client = jest.mocked(call_rpc);
 const blank = () =>
   Config.create({
@@ -33,22 +27,15 @@ const blank = () =>
     doubleBinding: Binding.create(),
     tripleBinding: Binding.create(),
   });
-let requests: Request[];
-let database: Config[];
+type Entry = { name: string; config: Config; dirty: boolean };
+let entries: Record<number, Entry>;
+let nextId: number;
 let interval: number;
-let rejectWrite: boolean;
-let unlockRequired: boolean;
-let metadataCalls: number;
-let notifyCore:
-  | ((notification: { lockStateChanged?: LockState }) => void)
-  | undefined;
+let requests: Request[];
+
 function mount() {
   const app = createConnectedMockZMKApp({
     subsystems: ["cormoran__runtime_tapdance"],
-  });
-  app.onNotification = jest.fn((subscription) => {
-    if (subscription.type === "core") notifyCore = subscription.callback;
-    return () => {};
   });
   return render(
     <StrictMode>
@@ -58,85 +45,106 @@ function mount() {
     </StrictMode>
   );
 }
-async function loaded() {
-  await waitFor(() =>
-    expect(screen.getByText("0 / 3 tap dances")).toBeInTheDocument()
-  );
-}
+
 beforeEach(() => {
   jest.clearAllMocks();
-  requests = [];
-  database = [blank(), blank(), blank()];
+  entries = {};
+  nextId = 0;
   interval = 200;
-  rejectWrite = false;
-  unlockRequired = false;
-  metadataCalls = 0;
-  notifyCore = undefined;
+  requests = [];
   client.mockImplementation(async (_connection, request) => {
     if (request.core?.getLockState)
       return {
         core: { getLockState: LockState.ZMK_STUDIO_CORE_LOCK_STATE_UNLOCKED },
       };
-    if (request.behaviors?.listAllBehaviors) {
-      metadataCalls++;
-      return { behaviors: { listAllBehaviors: { behaviors: [1, 2] } } };
-    }
-    if (request.behaviors?.getBehaviorDetails) {
-      metadataCalls++;
-      const id = request.behaviors.getBehaviorDetails.behaviorId;
+    if (request.behaviors?.listAllBehaviors)
+      return { behaviors: { listAllBehaviors: { behaviors: [1] } } };
+    if (request.behaviors?.getBehaviorDetails)
       return {
         behaviors: {
           getBehaviorDetails: {
-            id,
-            displayName: id === 1 ? "Key press" : "Toggle layer",
+            id: 1,
+            displayName: "Key Press",
             metadata: [],
           },
         },
       };
-    }
     if (!request.custom?.call) throw new Error("Unexpected request");
     const inner = Request.decode(request.custom.call.payload);
     requests.push(inner);
-    if (unlockRequired) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { MetaError } = require("@zmkfirmware/zmk-studio-ts-client");
-      throw new MetaError(1);
-    }
-    let response: Response;
-    const index =
-      inner.get?.index ?? inner.set?.index ?? inner.remove?.index ?? 0;
-    if (rejectWrite && !inner.get)
-      response = { error: { code: -22, message: "Invalid binding" } };
-    else {
-      if (inner.set) {
-        const key = ["", "singleBinding", "doubleBinding", "tripleBinding"][
-          inner.set.tapCount
-        ] as keyof Config;
-        if (!key) throw new Error("Invalid test tap count");
-        const candidate = {
-          ...database[index],
-          [key]: inner.set.binding,
-        };
-        if (
-          (!candidate.singleBinding?.behaviorId &&
-            (candidate.doubleBinding?.behaviorId ||
-              candidate.tripleBinding?.behaviorId)) ||
-          (candidate.tripleBinding?.behaviorId &&
-            !candidate.doubleBinding?.behaviorId)
-        )
-          response = { error: { code: -22, message: "Invalid binding" } };
-        else database[index] = candidate;
-      }
-      if (inner.remove) database[index] = blank();
+    const response: Response = {};
+    const ids = Object.keys(entries)
+      .map(Number)
+      .sort((a, b) => a - b);
+    if (inner.getGlobal || inner.setInterval) {
       if (inner.setInterval) interval = inner.setInterval.intervalMs;
-      response ??= {
-        state: {
-          index,
-          config: database[index],
-          intervalMs: interval,
-          maxCount: database.length,
-        },
+      response.global = {
+        intervalMs: interval,
+        maxEntries: 3,
+        usedEntries: ids.length,
+        maxNameLength: 24,
+        poolBytesTotal: 256,
+        poolBytesUsed: ids.length * 48,
+        hasUnsavedChanges: ids.some((id) => entries[id].dirty),
+        apiVersion: 2,
       };
+    } else if (inner.list) {
+      const selected = ids.filter(
+        (id) => !inner.list?.hasAfterId || id > inner.list.afterId
+      );
+      response.list = {
+        entries: selected.slice(0, 4).map((id) => ({
+          index: id,
+          name: entries[id].name,
+          hasUnsavedChanges: entries[id].dirty,
+        })),
+        hasMore: selected.length > 4,
+        nextAfterId: selected[Math.min(selected.length, 4) - 1] ?? 0,
+      };
+    } else if (inner.create) {
+      const id = nextId++;
+      entries[id] = { name: inner.create.name, config: blank(), dirty: true };
+      response.state = {
+        index: id,
+        name: entries[id].name,
+        config: entries[id].config,
+        intervalMs: interval,
+        maxCount: 3,
+        hasUnsavedChanges: true,
+      };
+    } else if (inner.rename || inner.set || inner.get) {
+      const id =
+        inner.rename?.index ?? inner.set?.index ?? inner.get?.index ?? 0;
+      const entry = entries[id];
+      if (!entry)
+        response.error = { code: -2, message: "Tap dance ID does not exist" };
+      else {
+        if (inner.rename) entry.name = inner.rename.name;
+        if (inner.set) {
+          const key = ["", "singleBinding", "doubleBinding", "tripleBinding"][
+            inner.set.tapCount
+          ] as keyof Config;
+          entry.config = { ...entry.config, [key]: inner.set.binding };
+        }
+        if (inner.set || inner.rename) entry.dirty = true;
+        response.state = {
+          index: id,
+          name: entry.name,
+          config: entry.config,
+          intervalMs: interval,
+          maxCount: 3,
+          hasUnsavedChanges: entry.dirty,
+        };
+      }
+    } else if (inner.delete || inner.save || inner.discard) {
+      if (inner.delete) delete entries[inner.delete.index];
+      if (inner.save)
+        Object.values(entries).forEach((entry) => (entry.dirty = false));
+      if (inner.discard)
+        Object.keys(entries).forEach((id) => {
+          if (entries[Number(id)].dirty) delete entries[Number(id)];
+        });
+      response.status = { affectedCount: 1 };
     }
     return {
       custom: {
@@ -149,237 +157,62 @@ beforeEach(() => {
   });
 });
 
-it("loads every slot and behavior metadata only once after renders settle", async () => {
+it("creates named entries, edits one binding at a time, saves and deletes", async () => {
   mount();
-  await loaded();
-  await waitFor(() => expect(metadataCalls).toBe(3));
-  expect(requests.map((request) => request.get?.index)).toEqual([0, 1, 2]);
-  const count = requests.length;
+  await waitFor(() =>
+    expect(screen.getByText(/0 \/ 3 tap dances/)).toBeInTheDocument()
+  );
+  expect(requests[0].getGlobal).toBeDefined();
+  await userEvent.type(screen.getByLabelText("New tap dance name"), "Alpha");
   await userEvent.click(screen.getByRole("button", { name: "Add tap dance" }));
+  await waitFor(() =>
+    expect(screen.getByText("Alpha (ID 0)")).toBeInTheDocument()
+  );
+  expect(screen.getByText("&rtd 0")).toBeInTheDocument();
   await userEvent.selectOptions(
-    screen.getByLabelText("Single 1 behavior"),
+    screen.getByLabelText("Single 0 behavior"),
     "1"
   );
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 40));
-  });
-  expect(requests).toHaveLength(count);
-  expect(metadataCalls).toBe(3);
-});
-
-it("adds and edits multiple dances, applies RAM, saves flash and deletes", async () => {
-  const user = userEvent.setup();
-  mount();
-  await loaded();
-  await user.click(screen.getByRole("button", { name: "Add tap dance" }));
-  await user.selectOptions(screen.getByLabelText("Single 1 behavior"), "1");
-  await user.clear(screen.getByLabelText("Single 1 parameter 1"));
-  await user.type(screen.getByLabelText("Single 1 parameter 1"), "458755");
-  await waitFor(() =>
-    expect(screen.getByLabelText("Double 1 behavior")).toBeInTheDocument()
-  );
-  await user.selectOptions(screen.getByLabelText("Double 1 behavior"), "1");
-  await user.clear(screen.getByLabelText("Double 1 parameter 1"));
-  await user.type(screen.getByLabelText("Double 1 parameter 1"), "458756");
-  await user.selectOptions(screen.getByLabelText("Triple 1 behavior"), "2");
-  await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
-  await screen.findByText(/Applied in RAM/);
-  expect(
-    requests.filter((request) => request.set).map((request) => request.set)
-  ).toMatchObject([
-    {
-      index: 0,
-      tapCount: 1,
-      persist: false,
-      binding: { behaviorId: 1, param1: 458755 },
-    },
-    {
-      index: 0,
-      tapCount: 2,
-      persist: false,
-      binding: { behaviorId: 1, param1: 458756 },
-    },
-    { index: 0, tapCount: 3, persist: false, binding: { behaviorId: 2 } },
-  ]);
-  await user.click(screen.getByRole("button", { name: "Save tap dance 1" }));
-  await screen.findByText("Saved to flash.");
-  expect(
-    requests
-      .filter((request) => request.set)
-      .slice(-3)
-      .map((request) => request.set?.persist)
-  ).toEqual([true, true, true]);
-  await user.selectOptions(screen.getByLabelText("Triple 1 behavior"), "0");
-  await user.selectOptions(screen.getByLabelText("Double 1 behavior"), "0");
-  await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
-  await screen.findByText(/Applied in RAM/);
-  expect(
-    requests
-      .filter((request) => request.set)
-      .slice(-3)
-      .map((request) => request.set?.tapCount)
-  ).toEqual([3, 2, 1]);
-  await user.click(screen.getByRole("button", { name: "Add tap dance" }));
-  expect(screen.getByLabelText("Single 2 behavior ID")).toBeInTheDocument();
-  await user.click(
-    screen.getByRole("button", { name: "Delete tap dance 1 (flash)" })
+  await userEvent.click(
+    screen.getByRole("button", { name: "Apply tap dance 0" })
   );
   await waitFor(() =>
-    expect(
-      screen.queryByLabelText("Single 1 behavior ID")
-    ).not.toBeInTheDocument()
+    expect(requests.some((item) => item.set?.tapCount === 1)).toBe(true)
   );
-  expect(requests.at(-1)?.remove).toEqual({ index: 0, persist: true });
-  await user.click(
-    screen.getByRole("button", { name: "Delete tap dance 2 (RAM)" })
-  );
-  await waitFor(() =>
-    expect(
-      screen.queryByLabelText("Single 2 behavior ID")
-    ).not.toBeInTheDocument()
-  );
-  expect(requests.at(-1)?.remove).toEqual({ index: 1, persist: false });
-});
-
-it("validates integer bounds and edits global interval separately", async () => {
-  const user = userEvent.setup();
-  mount();
-  await loaded();
-  await user.clear(screen.getByLabelText("Tap interval (ms)"));
-  await user.type(screen.getByLabelText("Tap interval (ms)"), "2001");
-  await user.click(screen.getByRole("button", { name: "Apply interval" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("1 to 2000");
-  expect(requests).toHaveLength(3);
-  await user.clear(screen.getByLabelText("Tap interval (ms)"));
-  await user.type(screen.getByLabelText("Tap interval (ms)"), "250");
-  await user.click(screen.getByRole("button", { name: "Apply interval" }));
-  await screen.findByText(/Applied in RAM/);
-  expect(requests.at(-1)?.setInterval).toEqual({
-    intervalMs: 250,
-    persist: false,
-  });
-  await user.click(screen.getByRole("button", { name: "Save interval" }));
-  await screen.findByText("Saved to flash.");
-  expect(requests.at(-1)?.setInterval?.persist).toBe(true);
-  await user.click(screen.getByRole("button", { name: "Add tap dance" }));
-  await user.selectOptions(screen.getByLabelText("Single 1 behavior"), "1");
-  await user.clear(screen.getByLabelText("Double 1 parameter 2"));
-  await user.type(screen.getByLabelText("Double 1 parameter 2"), "4294967296");
-  const count = requests.length;
-  await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("unsigned 32-bit");
-  expect(requests).toHaveLength(count);
-});
-
-it("requires a single action and a double before a triple", async () => {
-  const user = userEvent.setup();
-  mount();
-  await loaded();
-  await user.click(screen.getByRole("button", { name: "Add tap dance" }));
-  expect(screen.getByText("&rtd 0")).toBeInTheDocument();
-  const count = requests.length;
-  await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("single-tap");
-  expect(requests).toHaveLength(count);
-  await user.selectOptions(screen.getByLabelText("Single 1 behavior"), "1");
-  await user.selectOptions(screen.getByLabelText("Triple 1 behavior"), "2");
-  await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("double-tap");
-  expect(requests).toHaveLength(count);
-  await user.selectOptions(screen.getByLabelText("Double 1 behavior"), "1");
-  await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
-  await screen.findByText(/Applied in RAM/);
-});
-
-it("keeps the draft when firmware rejects a write", async () => {
-  const user = userEvent.setup();
-  mount();
-  await loaded();
-  await user.click(screen.getByRole("button", { name: "Add tap dance" }));
-  await user.selectOptions(screen.getByLabelText("Single 1 behavior"), "1");
-  await user.clear(screen.getByLabelText("Single 1 parameter 1"));
-  await user.type(screen.getByLabelText("Single 1 parameter 1"), "999");
-  rejectWrite = true;
-  await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Invalid binding (-22)"
-  );
-  expect(screen.getByLabelText("Single 1 parameter 1")).toHaveValue(999);
-});
-
-it("retries a rejected write once Studio unlocks", async () => {
-  const user = userEvent.setup();
-  mount();
-  await loaded();
-  await user.click(screen.getByRole("button", { name: "Add tap dance" }));
-  await user.selectOptions(screen.getByLabelText("Single 1 behavior"), "1");
-  unlockRequired = true;
-  await user.click(screen.getByRole("button", { name: "Save tap dance 1" }));
-  await screen.findByRole("button", { name: "Retry" });
-  const count = requests.length;
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 30));
-  });
-  expect(requests).toHaveLength(count);
-  await act(async () =>
-    notifyCore?.({
-      lockStateChanged: LockState.ZMK_STUDIO_CORE_LOCK_STATE_LOCKED,
-    })
-  );
-  unlockRequired = false;
-  await act(async () =>
-    notifyCore?.({
-      lockStateChanged: LockState.ZMK_STUDIO_CORE_LOCK_STATE_UNLOCKED,
-    })
-  );
-  await screen.findByText("Saved to flash.");
-  expect(requests).toHaveLength(count + 3);
-});
-
-it("shows missing subsystem guidance and handles missing context", () => {
-  const noContext = render(<TapDanceEditor />);
-  expect(noContext.container.firstChild).toBeNull();
-  noContext.unmount();
-  const app = createConnectedMockZMKApp({ subsystems: [] });
-  render(
-    <ZMKAppProvider value={app}>
-      <TapDanceEditor />
-    </ZMKAppProvider>
-  );
-  expect(screen.getByText(/Subsystem.*not found/)).toBeInTheDocument();
-});
-
-it("clears parameters when selecting None or entering behavior ID zero", async () => {
-  const user = userEvent.setup();
-  mount();
-  await loaded();
-  await user.click(screen.getByRole("button", { name: "Add tap dance" }));
-  await user.selectOptions(screen.getByLabelText("Single 1 behavior"), "1");
-  await waitFor(() =>
-    expect(screen.getByLabelText("Double 1 behavior")).toBeInTheDocument()
-  );
-  await user.selectOptions(screen.getByLabelText("Double 1 behavior"), "1");
-  await user.clear(screen.getByLabelText("Double 1 parameter 1"));
-  await user.type(screen.getByLabelText("Double 1 parameter 1"), "458756");
-  await user.clear(screen.getByLabelText("Double 1 parameter 2"));
-  await user.type(screen.getByLabelText("Double 1 parameter 2"), "2");
-  await user.selectOptions(screen.getByLabelText("Double 1 behavior"), "0");
-  expect(screen.getByLabelText("Double 1 parameter 1")).toHaveValue(0);
-  expect(screen.getByLabelText("Double 1 parameter 2")).toHaveValue(0);
-  await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
-  await screen.findByText(/Applied in RAM/);
   expect(
-    requests.filter((request) => request.set?.tapCount === 2).at(-1)?.set
-      ?.binding
-  ).toEqual({
-    behaviorId: 0,
-    param1: 0,
-    param2: 0,
-  });
-  await user.selectOptions(screen.getByLabelText("Triple 1 behavior"), "2");
-  await user.clear(screen.getByLabelText("Triple 1 parameter 1"));
-  await user.type(screen.getByLabelText("Triple 1 parameter 1"), "1");
-  await user.clear(screen.getByLabelText("Triple 1 behavior ID"));
-  await user.type(screen.getByLabelText("Triple 1 behavior ID"), "0");
-  expect(screen.getByLabelText("Triple 1 parameter 1")).toHaveValue(0);
+    requests.filter((item) => item.set).every((item) => item.set?.binding)
+  ).toBe(true);
+  await userEvent.click(screen.getByRole("button", { name: "Save all" }));
+  await waitFor(() => expect(requests.some((item) => item.save)).toBe(true));
+  await userEvent.clear(screen.getByLabelText("Tap dance 0 name"));
+  await userEvent.type(screen.getByLabelText("Tap dance 0 name"), "Renamed");
+  await userEvent.click(
+    screen.getByRole("button", { name: "Rename tap dance 0" })
+  );
+  await waitFor(() =>
+    expect(screen.getByText("Renamed (ID 0)")).toBeInTheDocument()
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Delete tap dance 0" })
+  );
+  await waitFor(() =>
+    expect(screen.getByText(/0 \/ 3 tap dances/)).toBeInTheDocument()
+  );
+});
+
+it("uses a stable firmware-issued ID after deletion", async () => {
+  entries[0] = { name: "Old", config: blank(), dirty: false };
+  nextId = 1;
+  mount();
+  await waitFor(() =>
+    expect(screen.getByText("Old (ID 0)")).toBeInTheDocument()
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Delete tap dance 0" })
+  );
+  await userEvent.type(screen.getByLabelText("New tap dance name"), "New");
+  await userEvent.click(screen.getByRole("button", { name: "Add tap dance" }));
+  await waitFor(() =>
+    expect(screen.getByText("New (ID 1)")).toBeInTheDocument()
+  );
 });

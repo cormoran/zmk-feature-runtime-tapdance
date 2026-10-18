@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #define DT_DRV_COMPAT cormoran_zmk_behavior_runtime_tapdance
 
+#include <limits.h>
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
 #include <drivers/behavior.h>
@@ -13,7 +14,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 static const struct behavior_parameter_value_metadata param_values[] = {{
     .display_name = "Tap dance",
     .type = BEHAVIOR_PARAMETER_VALUE_TYPE_RANGE,
-    .range = {.min = 0, .max = CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES - 1},
+    .range = {.min = 0, .max = INT32_MAX - 1},
 }};
 static const struct behavior_parameter_metadata_set param_metadata_set[] = {{
     .param1_values = param_values,

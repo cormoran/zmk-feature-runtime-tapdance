@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Exercise the public keymap binding and observe the resulting HID events. */
 #include <errno.h>
+#include <stdio.h>
+#include <string.h>
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -82,6 +84,60 @@ static void interrupt(void) {
 static void verify_timer(struct k_work *work) {
     ARG_UNUSED(work);
     EXPECT(DOWN(A), UP(A));
+    uint32_t id;
+    __ASSERT(zmk_runtime_tapdance_create("Second", false, &id) == -EEXIST,
+             "duplicate name rejected");
+    __ASSERT(zmk_runtime_tapdance_rename(1, "First", false) == -EEXIST,
+             "duplicate rename rejected");
+    __ASSERT(zmk_runtime_tapdance_rename(1, "Renamed", false) == 0, "rename keeps ID");
+    char name[CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN + 1];
+    __ASSERT(zmk_runtime_tapdance_name(1, name, sizeof(name), NULL) == 0 &&
+                 strcmp(name, "Renamed") == 0,
+             "renamed entry read by same ID");
+    __ASSERT(zmk_runtime_tapdance_delete(0, false) == 0, "delete entry");
+    __ASSERT(zmk_runtime_tapdance_read(0, &(struct zmk_runtime_tapdance_config){0}) == -ENOENT,
+             "deleted ID is inert");
+    __ASSERT(zmk_runtime_tapdance_create("Replacement", false, &id) == 0 && id == 2,
+             "deleted ID was not reused");
+    for (uint32_t i = 3; i <= 16; i++) {
+        snprintf(name, sizeof(name), "Extra %u", i);
+        __ASSERT(zmk_runtime_tapdance_create(name, false, &id) == 0 && id == i,
+                 "shared entry capacity");
+    }
+    __ASSERT(zmk_runtime_tapdance_used_count() == 16, "all entries allocated");
+    __ASSERT(zmk_runtime_tapdance_create("Overflow", false, &id) == -ENOSPC,
+             "entry capacity enforced");
+    __ASSERT(zmk_runtime_tapdance_delete(2, false) == 0, "free pool entry");
+    __ASSERT(zmk_runtime_tapdance_create("After free", false, &id) == 0 && id > 16,
+             "pool and entry slot recovered without ID reuse");
+    for (uint32_t old_id = 1; old_id <= id; old_id++) {
+        struct zmk_runtime_tapdance_config existing;
+        if (zmk_runtime_tapdance_read(old_id, &existing) == 0) {
+            __ASSERT(zmk_runtime_tapdance_delete(old_id, false) == 0, "clear entry for pool test");
+        }
+    }
+    __ASSERT(zmk_runtime_tapdance_pool_used() == 0, "delete returns pooled bytes");
+    char long_name[CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN + 1];
+    memset(long_name, 'x', CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN);
+    long_name[CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN] = '\0';
+    uint32_t first_long_id = 0, long_count = 0;
+    for (uint32_t i = 0; i < 16; i++) {
+        long_name[CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN - 2] = '0' + i / 10;
+        long_name[CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN - 1] = '0' + i % 10;
+        int ret = zmk_runtime_tapdance_create(long_name, false, &id);
+        if (ret == -ENOSPC) {
+            break;
+        }
+        __ASSERT(ret == 0, "long entry creation: %d", ret);
+        if (long_count == 0) {
+            first_long_id = id;
+        }
+        long_count++;
+    }
+    __ASSERT(long_count > 0 && long_count < 16, "shared byte pool exhausted before entry limit");
+    __ASSERT(zmk_runtime_tapdance_delete(first_long_id, false) == 0, "free pooled bytes");
+    __ASSERT(zmk_runtime_tapdance_create("Recovered", false, &id) == 0,
+             "pooled bytes reused after deletion");
     collecting = false;
     LOG_INF("PASS: runtime_tapdance_public_events");
 }
@@ -96,6 +152,11 @@ static void run(struct k_work *work) {
         .double_binding = {kp, B, 0},
         .triple_binding = {kp, C, 0},
     };
+    uint32_t first_id, second_id;
+    int create_rc = zmk_runtime_tapdance_create("First", false, &first_id);
+    __ASSERT(create_rc == 0 && first_id == 0, "first allocated ID: %d", create_rc);
+    __ASSERT(zmk_runtime_tapdance_create("Second", false, &second_id) == 0 && second_id == 1,
+             "second allocated ID");
     __ASSERT(zmk_runtime_tapdance_write(0, &cfg, false) == 0, "config write");
     __ASSERT(zmk_runtime_tapdance_set_timeout_ms(100, false) == 0, "interval");
     __ASSERT(zmk_runtime_tapdance_set_timeout_ms(0, false) == -EINVAL, "invalid interval");
@@ -203,12 +264,6 @@ static void run(struct k_work *work) {
     position(0, false, 10);
     EXPECT();
     __ASSERT(rejected_releases == 0, "rejected action received release");
-
-    __ASSERT(zmk_runtime_tapdance_delete(0, false) == 0, "delete");
-    position(0, true, 1);
-    position(0, false, 10);
-    interrupt();
-    EXPECT();
 
     cfg = (struct zmk_runtime_tapdance_config){.single_binding = {kp, A, 0},
                                                .double_binding = {kp, B, 0}};

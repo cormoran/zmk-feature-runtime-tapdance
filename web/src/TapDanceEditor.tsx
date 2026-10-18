@@ -11,7 +11,6 @@ import {
   Config,
   Request,
   Response,
-  type State,
 } from "./proto/cormoran/runtime-tapdance/runtime_tapdance";
 
 const IDENTIFIER = "cormoran__runtime_tapdance";
@@ -22,23 +21,13 @@ const codec = {
 };
 type BehaviorOption = { id: number; name: string };
 const emptyBinding = () => Binding.create();
-const emptyConfig = () =>
-  Config.create({
-    singleBinding: emptyBinding(),
-    doubleBinding: emptyBinding(),
-    tripleBinding: emptyBinding(),
-  });
 const uint32 = (value: number) =>
   Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
-function stateOf(response: Response | null): State {
+function checked(response: Response | null): Response {
   if (response?.error)
     throw new Error(`${response.error.message} (${response.error.code})`);
-  if (!response?.state?.config)
-    throw new Error("Firmware returned no tapdance state");
-  return response.state;
-}
-function used(config: Config) {
-  return (config.singleBinding?.behaviorId ?? 0) !== 0;
+  if (!response) throw new Error("Firmware returned no tapdance response");
+  return response;
 }
 
 export function TapDanceEditor() {
@@ -47,8 +36,13 @@ export function TapDanceEditor() {
   const { ready, subsystem, call } = useCustomSubsystem(IDENTIFIER, codec);
   const subsystemIndex = subsystem?.index;
   const { locked } = useStudioLockState();
-  const [slots, setSlots] = useState<Config[]>([]);
+  const [slots, setSlots] = useState<Record<number, Config>>({});
+  const [names, setNames] = useState<Record<number, string>>({});
   const [visible, setVisible] = useState<number[]>([]);
+  const [maxCount, setMaxCount] = useState(0);
+  const [maxNameLength, setMaxNameLength] = useState(24);
+  const [pool, setPool] = useState({ used: 0, total: 0 });
+  const [newName, setNewName] = useState("");
   const [interval, setInterval] = useState(200);
   const [behaviors, setBehaviors] = useState<BehaviorOption[]>([]);
   const [busy, setBusy] = useState(false);
@@ -64,21 +58,44 @@ export function TapDanceEditor() {
     setBusy(true);
     setError("");
     try {
-      const first = stateOf(await call({ get: { index: 0 } }));
-      if (first.maxCount < 1 || first.maxCount > 64)
-        throw new Error("Invalid firmware slot limit");
+      const global = checked(await call({ getGlobal: {} })).global;
+      if (!global || global.apiVersion !== 2)
+        throw new Error("Firmware does not support named tap dances");
       if (generation !== loadGeneration.current.value) return;
-      const loaded = [first.config!];
-      for (let index = 1; index < first.maxCount; index++) {
-        if (generation !== loadGeneration.current.value) return;
-        loaded.push(stateOf(await call({ get: { index } })).config!);
+      const loaded: Record<number, Config> = {};
+      const loadedNames: Record<number, string> = {};
+      const ids: number[] = [];
+      let cursor = 0;
+      let hasCursor = false;
+      for (;;) {
+        const page = checked(
+          await call({ list: { afterId: cursor, hasAfterId: hasCursor } })
+        ).list;
+        if (!page) throw new Error("Firmware returned no tap dance list");
+        for (const item of page.entries) {
+          const detail = checked(
+            await call({ get: { index: item.index } })
+          ).state;
+          if (!detail?.config)
+            throw new Error("Firmware returned no tap dance state");
+          ids.push(item.index);
+          loaded[item.index] = detail.config;
+          loadedNames[item.index] = item.name;
+        }
+        if (!page.hasMore) break;
+        if (page.entries.length === 0)
+          throw new Error("Firmware returned an empty list page");
+        cursor = page.nextAfterId;
+        hasCursor = true;
       }
       if (generation !== loadGeneration.current.value) return;
       setSlots(loaded);
-      setVisible(
-        loaded.flatMap((config, index) => (used(config) ? [index] : []))
-      );
-      setInterval(first.intervalMs);
+      setNames(loadedNames);
+      setVisible(ids);
+      setMaxCount(global.maxEntries);
+      setMaxNameLength(global.maxNameLength);
+      setPool({ used: global.poolBytesUsed, total: global.poolBytesTotal });
+      setInterval(global.intervalMs);
       setAwaitingUnlock(false);
     } catch (reason) {
       if (generation !== loadGeneration.current.value) return;
@@ -148,30 +165,19 @@ export function TapDanceEditor() {
       setMessage("");
       let next = 0;
       try {
-        let state: State | null = null;
         for (; next < batch.length; next++) {
-          state = stateOf(await call(batch[next]));
+          checked(await call(batch[next]));
         }
-        if (!state) return;
-        const last = batch[batch.length - 1];
-        if (last.set || last.remove) {
-          setSlots((current) =>
-            current.map((config, index) =>
-              index === state.index ? state.config! : config
-            )
-          );
-        }
-        if (last.remove)
-          setVisible((current) =>
-            current.filter((index) => index !== state.index)
-          );
-        if (last.setInterval) setInterval(state.intervalMs);
-        const persist =
-          last.set?.persist ||
-          last.remove?.persist ||
-          last.setInterval?.persist;
+        await load();
         setMessage(
-          persist
+          batch.some(
+            (item) =>
+              item.save ||
+              item.delete ||
+              item.remove ||
+              item.set?.persist ||
+              item.setInterval?.persist
+          )
             ? "Saved to flash."
             : "Applied in RAM. Save to flash to keep changes after reboot."
         );
@@ -185,7 +191,7 @@ export function TapDanceEditor() {
         setBusy(false);
       }
     },
-    [call]
+    [call, load]
   );
 
   const retry = useCallback(() => {
@@ -218,11 +224,10 @@ export function TapDanceEditor() {
     );
   const disabled = busy || locked || awaitingUnlock;
   const edit = (index: number, update: Partial<Config>) =>
-    setSlots((current) =>
-      current.map((config, slot) =>
-        slot === index ? { ...config, ...update } : config
-      )
-    );
+    setSlots((current) => ({
+      ...current,
+      [index]: { ...current[index], ...update },
+    }));
   const validate = (config: Config) => {
     if (!config.singleBinding?.behaviorId)
       return "Select a single-tap behavior for this dance.";
@@ -243,6 +248,7 @@ export function TapDanceEditor() {
   };
   const write = (index: number, persist: boolean) => {
     const config = slots[index];
+    if (!config) return;
     const issue = validate(config);
     if (issue) {
       setError(issue);
@@ -269,12 +275,13 @@ export function TapDanceEditor() {
     <section className="card">
       <h2>Runtime tap dances</h2>
       <p>
-        Assign <code>&amp;rtd &lt;slot&gt;</code> to a key in the keymap, then
-        configure that slot below. Single, double and triple taps invoke the
-        selected behaviors. The last configured tap count resolves immediately;
-        other counts wait for the interval or another key press.
+        Create a named tap dance and assign its ID as{" "}
+        <code>&amp;rtd &lt;id&gt;</code>
+        to a key. Single, double and triple taps invoke the selected behaviors.
+        The last configured tap count resolves immediately; other counts wait
+        for the interval or another key press.
       </p>
-      <p>Apply changes RAM only. Save writes the bindings to flash.</p>
+      <p>Apply changes in RAM. Save all writes pending changes to flash.</p>
       {locked && <p className="locked-banner">ZMK Studio is locked.</p>}
       {awaitingUnlock && (
         <div className="unlock-prompt">
@@ -307,19 +314,68 @@ export function TapDanceEditor() {
         </div>
       </fieldset>
       <p>
-        {visible.length} / {slots.length} tap dances
+        {visible.length} / {maxCount} tap dances · pool {pool.used} /{" "}
+        {pool.total} bytes
       </p>
+      <div className="editor-actions">
+        <input
+          aria-label="New tap dance name"
+          maxLength={maxNameLength}
+          value={newName}
+          onChange={(event) => setNewName(event.target.value)}
+        />
+        <button
+          disabled={disabled || !newName.trim() || visible.length >= maxCount}
+          onClick={() => {
+            void send({ create: { name: newName, persist: false } });
+            setNewName("");
+          }}
+        >
+          Add tap dance
+        </button>
+        <button disabled={disabled} onClick={() => void send({ save: {} })}>
+          Save all
+        </button>
+        <button disabled={disabled} onClick={() => void send({ discard: {} })}>
+          Discard unsaved
+        </button>
+      </div>
       {visible.map((index) => (
         <fieldset key={index} disabled={disabled} className="dance-slot">
-          <legend>Tap dance {index + 1}</legend>
+          <legend>
+            {names[index]} (ID {index})
+          </legend>
           <p>
             Keymap binding: <code>&amp;rtd {index}</code>
           </p>
+          <label>
+            Name{" "}
+            <input
+              aria-label={`Tap dance ${index} name`}
+              maxLength={maxNameLength}
+              value={names[index] ?? ""}
+              onChange={(event) =>
+                setNames((current) => ({
+                  ...current,
+                  [index]: event.target.value,
+                }))
+              }
+            />
+          </label>
+          <button
+            onClick={() =>
+              void send({
+                rename: { index, name: names[index], persist: false },
+              })
+            }
+          >
+            Rename tap dance {index}
+          </button>
           {(["singleBinding", "doubleBinding", "tripleBinding"] as const).map(
             (key) => (
               <BindingEditor
                 key={key}
-                label={`${key === "singleBinding" ? "Single" : key === "doubleBinding" ? "Double" : "Triple"} ${index + 1}`}
+                label={`${key === "singleBinding" ? "Single" : key === "doubleBinding" ? "Double" : "Triple"} ${index}`}
                 binding={slots[index][key] ?? emptyBinding()}
                 options={behaviors}
                 onChange={(binding) => edit(index, { [key]: binding })}
@@ -328,37 +384,15 @@ export function TapDanceEditor() {
           )}
           <div className="editor-actions">
             <button onClick={() => write(index, false)}>
-              Apply tap dance {index + 1}
+              Apply tap dance {index}
             </button>
-            <button onClick={() => write(index, true)}>
-              Save tap dance {index + 1}
-            </button>
-            <button
-              onClick={() => void send({ remove: { index, persist: false } })}
-            >
-              Delete tap dance {index + 1} (RAM)
-            </button>
-            <button
-              onClick={() => void send({ remove: { index, persist: true } })}
-            >
-              Delete tap dance {index + 1} (flash)
+            <button onClick={() => void send({ delete: { index } })}>
+              Delete tap dance {index}
             </button>
           </div>
         </fieldset>
       ))}
       <div className="editor-actions">
-        <button
-          disabled={disabled || visible.length >= slots.length}
-          onClick={() => {
-            const index = slots.findIndex((_, slot) => !visible.includes(slot));
-            if (index < 0) return;
-            edit(index, emptyConfig());
-            setVisible((current) => [...current, index].sort((a, b) => a - b));
-            setMessage("");
-          }}
-        >
-          Add tap dance
-        </button>
         <button disabled={disabled} onClick={() => void load()}>
           Reload from keyboard
         </button>

@@ -1,10 +1,10 @@
 # zmk-feature-runtime-tapdance
 
 Configure single-, double-, and triple-tap behaviors at runtime through a Web UI.
-Place `&rtd <slot>` in the ZMK keymap, then edit that slot's actions without
-rebuilding firmware. A slot can be shared by several keys and used on different
+Place `&rtd <id>` in the ZMK keymap, then edit that named tap dance's actions without
+rebuilding firmware. An ID can be shared by several keys and used on different
 layers. The module uses the unofficial custom Studio protocol in cormoran's ZMK
-fork and persists settings through `zmk-feature-custom-settings`.
+fork and persists named entries through `zmk-feature-custom-settings`' shared pool.
 
 Built from [cormoran's custom Studio RPC module template](https://github.com/cormoran/zmk-module-template-with-custom-studio-rpc). <!-- zmk-module-template:keep -->
 
@@ -47,7 +47,7 @@ Build with `studio-rpc-usb-uart` for USB Web Serial. Include an
 enable this module on the central; the central receives key events from both
 halves. The peripheral does not need it.
 
-Include the behavior definition and assign slot 0 to a key:
+Include the behavior definition and assign ID 0 to a key:
 
 ```dts
 #include <behaviors.dtsi>
@@ -63,30 +63,46 @@ Include the behavior definition and assign slot 0 to a key:
 };
 ```
 
-An empty slot produces no key action. Only behaviors present in the
-firmware can be selected for a slot; `&rtd` itself is rejected as an action to
-prevent recursive dances. `CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES`
-sets the slot count (default 16); `CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_ACTIVE`
+An unallocated ID produces no key action. Create a named tap dance and use the
+ID returned by Studio; the first ID on a fresh device is 0. Only behaviors
+present in the firmware can be selected; `&rtd` itself is rejected as an action
+to prevent recursive dances. `CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES`
+sets the maximum number of simultaneous named entries (default 16). Entries
+allocate and release bytes from `CONFIG_ZMK_RUNTIME_TAPDANCE_POOL_BYTES`
+(default 1024), and names are limited to 24 UTF-8 bytes by default.
+`CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_ACTIVE`
 sets the maximum number of keys that can dance simultaneously (default 16).
 
 ## Configure from the browser
 
 Run `cd web && npm ci && npm run dev`, then open the displayed URL in Chrome or
 Edge and connect to the keyboard. The firmware also advertises the project's Web
-UI URL. Add a tap dance, note its zero-based slot number, and place that number
-in `&rtd <slot>` in the keymap or through Studio keymap editing.
+UI URL. Add a named tap dance, note the ID returned by the firmware, and place
+that ID in `&rtd <id>` in the keymap or through Studio keymap editing. IDs do not
+change on rename or when another tap dance is deleted. Deleted IDs are inert and
+are never reused.
 
-Choose a **single-tap behavior** to activate a slot. Double and triple
+Choose a **single-tap behavior** to activate an entry. Double and triple
 behaviors are optional, but triple requires double. For example, select **Key
 Press** for all three and set parameter 1 to `458756` (`&kp A`), `458757`
 (`&kp B`), and `458758` (`&kp C`); parameter 2 is `0`. The firmware checks
 behavior IDs and parameters against ZMK metadata. Apply writes each binding to
-RAM; Save persists them to flash. Deleting a slot makes `&rtd <slot>` inactive. The global
+RAM; Save persists pending edits to flash. Discard restores saved values and
+removes entries created only in RAM. Delete erases an entry immediately from RAM
+and flash. The ID counter is saved on every Create, including RAM-only creates,
+so Discard never reuses an ID. The global
 interval defaults to 200 ms and accepts 1–2000 ms.
 
 Module values also appear in the custom-settings subsystem for import/export.
 Behavior IDs are local to the firmware's behavior map; reuse exports with the
 same mapping.
+
+On the first boot after upgrading from the slot-based version of this PR,
+configured legacy slot `N` is copied to a named entry with the same ID `N` and
+name `Tapdance N`. Existing `&rtd N` bindings continue to refer to it. Empty
+legacy slots are skipped. Once all entries are migrated, the old array setting
+is erased. If the shared pool cannot hold the migration, the old setting is
+retained so migration can be retried after increasing the pool size.
 
 ## Recognition rules
 
@@ -100,7 +116,7 @@ The selected action stays pressed while the final physical tap is held, and
 releases with that tap. A single held key resolves when its interval expires.
 Each active sequence keeps its starting configuration, even if the slot is edited
 while it runs. Sequences are tracked by physical position and split input source,
-so several keys can share one slot. Keymap layers choose where `&rtd` is active.
+so several keys can share one ID. Keymap layers choose where `&rtd` is active.
 
 ## Development and tests
 

@@ -22,39 +22,40 @@ test("configures and removes tap dances through real firmware", async ({
   await expect(page.getByText(/Applied in RAM/)).toBeVisible();
   await page.getByRole("button", { name: "Save interval" }).click();
   await expect(page.getByText("Saved to flash.")).toBeVisible();
+  await page.getByLabel("New tap dance name").fill("Alpha");
   await page.getByRole("button", { name: "Add tap dance" }).click();
   await expect(page.getByText("&rtd 0")).toBeVisible();
-  const singlePicker = page.getByLabel("Single 1 behavior", { exact: true });
-  const doublePicker = page.getByLabel("Double 1 behavior", { exact: true });
+  await expect(page.getByText("Alpha (ID 0)")).toBeVisible();
+  const singlePicker = page.getByLabel("Single 0 behavior", { exact: true });
+  const doublePicker = page.getByLabel("Double 0 behavior", { exact: true });
   const keyPress = doublePicker
     .locator("option")
     .filter({ hasText: /^Key Press/ });
   await expect(keyPress).toHaveCount(1);
   const keyPressId = await keyPress.getAttribute("value");
   await singlePicker.selectOption(keyPressId!);
-  await page.getByLabel("Single 1 parameter 1").fill("458755");
+  await page.getByLabel("Single 0 parameter 1").fill("458755");
   await doublePicker.selectOption(keyPressId!);
-  await page.getByLabel("Double 1 parameter 1").fill("458756");
+  await page.getByLabel("Double 0 parameter 1").fill("458756");
   await page
-    .getByLabel("Triple 1 behavior", { exact: true })
+    .getByLabel("Triple 0 behavior", { exact: true })
     .selectOption(keyPressId!);
-  await page.getByLabel("Triple 1 parameter 1").fill("458757");
-  await page.getByRole("button", { name: "Save tap dance 1" }).click();
+  await page.getByLabel("Triple 0 parameter 1").fill("458757");
+  await page.getByRole("button", { name: "Apply tap dance 0" }).click();
+  await page.getByRole("button", { name: "Save all" }).click();
   await expect(page.getByText("Saved to flash.")).toBeVisible();
   await page.getByRole("button", { name: "Reload from keyboard" }).click();
   await expect(
-    page.getByLabel("Single 1 behavior", { exact: true })
+    page.getByLabel("Single 0 behavior", { exact: true })
   ).toHaveValue(keyPressId!);
-  await expect(page.getByLabel("Single 1 parameter 1")).toHaveValue("458755");
+  await expect(page.getByLabel("Single 0 parameter 1")).toHaveValue("458755");
   await expect(
-    page.getByLabel("Double 1 behavior", { exact: true })
+    page.getByLabel("Double 0 behavior", { exact: true })
   ).toHaveValue(keyPressId!);
-  await expect(page.getByLabel("Double 1 parameter 1")).toHaveValue("458756");
-  await expect(page.getByLabel("Triple 1 parameter 1")).toHaveValue("458757");
+  await expect(page.getByLabel("Double 0 parameter 1")).toHaveValue("458756");
+  await expect(page.getByLabel("Triple 0 parameter 1")).toHaveValue("458757");
   await expect(page.getByLabel("Tap interval (ms)")).toHaveValue("250");
-  await page
-    .getByRole("button", { name: "Delete tap dance 1 (flash)" })
-    .click();
+  await page.getByRole("button", { name: "Delete tap dance 0" }).click();
   await expect(page.getByText("0 / 16 tap dances")).toBeVisible();
   await page.getByLabel("Tap interval (ms)").fill("0");
   await page.getByRole("button", { name: "Apply interval" }).click();
