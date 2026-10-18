@@ -10,8 +10,7 @@ Built from [cormoran's custom Studio RPC module template](https://github.com/cor
 
 ## Install
 
-Add the module and custom Studio ZMK fork to your keyboard's West manifest. Until
-this PR merges, use `codex/runtime-tapdance`; afterwards use `main`.
+Add the module and custom Studio ZMK fork to your keyboard's West manifest.
 
 ```yaml
 manifest:
@@ -21,7 +20,7 @@ manifest:
   projects:
     - name: zmk-feature-runtime-tapdance
       remote: cormoran
-      revision: codex/runtime-tapdance
+      revision: main
       import: true
     - name: zmk
       remote: cormoran
