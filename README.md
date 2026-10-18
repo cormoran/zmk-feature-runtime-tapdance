@@ -1,18 +1,17 @@
 # zmk-feature-runtime-tapdance
 
-Configure double- and triple-tap actions from a browser without rebuilding your
-ZMK keymap. The module listens to key-position changes and supports multiple
-independent tap dances, with a global recognition interval and a per-position
-choice of immediate or delayed normal keys.
+Configure single-, double-, and triple-tap behaviors at runtime through a Web UI.
+Place `&rtd <slot>` in the ZMK keymap, then edit that slot's actions without
+rebuilding firmware. A slot can be shared by several keys and used on different
+layers. The module uses the unofficial custom Studio protocol in cormoran's ZMK
+fork and persists settings through `zmk-feature-custom-settings`.
 
 Built from [cormoran's custom Studio RPC module template](https://github.com/cormoran/zmk-module-template-with-custom-studio-rpc). <!-- zmk-module-template:keep -->
-The Web UI requires the unofficial custom Studio protocol in cormoran's ZMK fork.
 
 ## Install
 
-Add these projects to your keyboard config's West manifest. Until the
-implementation PR is merged, select `codex/runtime-tapdance` for this module;
-after merging, use `main`.
+Add the module and custom Studio ZMK fork to your keyboard's West manifest. Until
+this PR merges, use `codex/runtime-tapdance`; afterwards use `main`.
 
 ```yaml
 manifest:
@@ -31,7 +30,7 @@ manifest:
         file: app/west.yml
 ```
 
-Enable the feature and Studio in your keyboard's `.conf`:
+Enable the module and Studio in your keyboard's `.conf`:
 
 ```conf
 CONFIG_ZMK_RUNTIME_TAPDANCE=y
@@ -43,73 +42,65 @@ CONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=256
 CONFIG_ZMK_LOW_PRIORITY_THREAD_STACK_SIZE=2048
 ```
 
-Build with the `studio-rpc-usb-uart` snippet for USB Web Serial. Include an
-`&studio_unlock` key binding and unlock Studio when prompted. The feature selects
-the custom-settings persistence backend and behavior metadata/IDs it needs.
-For a split keyboard, configure the module on the **central**: it also sees
-positions originating from the peripheral. No extra peripheral event relay is
-required. Keep the module disabled on the peripheral.
+Build with `studio-rpc-usb-uart` for USB Web Serial. Include an
+`&studio_unlock` key binding if Studio locking is enabled. On a split keyboard,
+enable this module on the central; the central receives key events from both
+halves. The peripheral does not need it.
 
-No special tap-dance binding or devicetree node is needed: your existing keymap
-provides each position's normal single-tap behavior. Only behaviors included in
-the firmware can be assigned at runtime.
+Include the behavior definition and assign slot 0 to a key:
+
+```dts
+#include <behaviors.dtsi>
+#include <behaviors/runtime_tapdance.dtsi>
+
+/ {
+    keymap {
+        compatible = "zmk,keymap";
+        default_layer {
+            bindings = <&rtd 0 &kp B>;
+        };
+    };
+};
+```
+
+An empty or disabled slot produces no key action. Only behaviors present in the
+firmware can be selected for a slot; `&rtd` itself is rejected as an action to
+prevent recursive dances. `CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES`
+sets the slot count (default 16); `CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_ACTIVE`
+sets the maximum number of keys that can dance simultaneously (default 16).
 
 ## Configure from the browser
 
-Run the UI locally with `cd web && npm ci && npm run dev`, then open the displayed
-localhost URL in a Chromium browser. Connect USB or Bluetooth as supported by
-your browser and keyboard. The firmware advertises the project's Pages UI URL;
-GitHub Pages deployment is available after merging into `main` and enabling
-Pages with GitHub Actions as its source.
+Run `cd web && npm ci && npm run dev`, then open the displayed URL in Chrome or
+Edge and connect to the keyboard. The firmware also advertises the project's Web
+UI URL. Add a tap dance, note its zero-based slot number, and place that number
+in `&rtd <slot>` in the keymap or through Studio keymap editing.
 
-1. Set the global interval (1–2000 ms; default 200 ms).
-2. Add a tap dance and choose a zero-based key position. Positions are the
-   physical-layout/keymap indexes, including the central's offset for split keys.
-3. Assign a double-tap and/or triple-tap behavior and its parameters.
-4. Choose **Delay normal keys** or **Immediate normal keys** for this entry.
-5. Apply changes to RAM for testing, or save them to persist across reboot.
+Choose a **single-tap behavior** for every enabled slot. Double and triple
+behaviors are optional, but triple requires double. For example, select **Key
+Press** for all three and set parameter 1 to `458756` (`&kp A`), `458757`
+(`&kp B`), and `458758` (`&kp C`); parameter 2 is `0`. The firmware checks
+behavior IDs and parameters against ZMK metadata. Apply writes RAM only; Save
+persists to flash. Deleting a slot makes `&rtd <slot>` inactive. The global
+interval defaults to 200 ms and accepts 1–2000 ms.
 
-For example, leave position 0's normal binding as `&kp A`, then assign **Key
-Press** to its double and triple actions. Use parameter 1 `458757` (`0x70005`,
-keyboard B) for double and `458758` (`0x70006`, keyboard C) for triple; parameter
-2 is `0`. In delayed mode this produces normal A for a single, B for a double,
-and C for a triple. Parameters are numeric ZMK binding values; the firmware
-validates them against the selected behavior's metadata.
-
-An enabled position must be unique. Additional actions use a separate virtual
-position so their hold-tap state is independent of the normal key. There are 16
-slots by default; adjust
-`CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES` at build time if needed.
-Deleting a saved entry restores its normal keymap behavior. Changes made only
-in RAM disappear on reboot. Module values are also registered in the common
-custom-settings subsystem for settings import/export. Behavior IDs in a slot
-refer to the connected keyboard; reuse exports with the same behavior mapping.
+Module values also appear in the custom-settings subsystem for import/export.
+Behavior IDs are local to the firmware's behavior map; reuse exports with the
+same mapping.
 
 ## Recognition rules
 
-The interval runs from each press to the next press. Each counted tap must
-include a release before the next press. A press exactly at the deadline starts
-a new sequence. Two presses wait until the deadline to distinguish a double
-from a triple; the third press triggers the triple immediately.
+The interval runs from each press to the next press. A release must occur
+between taps. A press exactly at the deadline starts a new sequence. The last
+configured tap count resolves immediately: with single and double configured,
+the second press invokes double; with triple configured, double waits for a
+possible third press. Another key press resolves any undecided dances first.
 
-| Mode      | Single tap                                         | Double/triple tap                                     |
-| --------- | -------------------------------------------------- | ----------------------------------------------------- |
-| Delayed   | Replay the normal press/release after the interval | Suppress normal keys and invoke the assigned behavior |
-| Immediate | Send every normal press/release immediately        | Also invoke the assigned behavior                     |
-
-If the matching double/triple action is unassigned, delayed mode replays the
-normal keys for that sequence. A long first hold becomes a normal held key when
-the interval expires, then releases normally. A recognized action stays pressed
-while its final physical tap is held and releases with that tap. Other key
-positions continue normally. Active sequences keep their original settings, so
-editing or deleting an entry during a held key does not leave it stuck.
-
-Bindings that change layers follow ordinary ZMK behavior semantics. Delayed
-normal keys reach the keymap when replayed, so intervening layer changes can
-change their normal action. ZMK's limit of one undecided hold-tap still applies;
-an action returning an error falls back to normal keys in delayed mode. This
-module does not promise composition with other position-event consumers such as
-compile-time combos or tap dances.
+The selected action stays pressed while the final physical tap is held, and
+releases with that tap. A single held key resolves when its interval expires.
+Each active sequence keeps its starting configuration, even if the slot is edited
+while it runs. Sequences are tracked by physical position and split input source,
+so several keys can share one slot. Keymap layers choose where `&rtd` is active.
 
 ## Development and tests
 
@@ -134,7 +125,7 @@ VITE_BASE=/ npm run build
 VITE_BASE=/zmk-feature-runtime-tapdance/ npm run build
 ```
 
-Firmware tests assert emitted normal-key and dance-action events. RPC persistence
+Firmware tests assert emitted normal-key and dance-action events. RPC writes
 and validation are exercised through real firmware in Renode; browser E2E tests
 connect the real UI to that firmware. The BLE fixture exercises settings RPC
 while a split peripheral is connected.

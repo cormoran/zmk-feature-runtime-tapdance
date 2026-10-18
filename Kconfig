@@ -13,6 +13,11 @@ config ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES
     default 16
     range 1 16
 
+config ZMK_RUNTIME_TAPDANCE_MAX_ACTIVE
+    int "Maximum simultaneous runtime tap dances"
+    default 16
+    range 1 64
+
 config ZMK_RUNTIME_TAPDANCE_NATIVE_BLE_TEST
     bool "Enable native BLE fixture linker workaround"
     depends on ARCH_POSIX

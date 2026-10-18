@@ -1,5 +1,6 @@
 #include <dt-bindings/zmk/keys.h>
 #include <behaviors.dtsi>
+#include <behaviors/runtime_tapdance.dtsi>
 #include <dt-bindings/zmk/kscan_mock.h>
 / {
     behaviors {
@@ -10,7 +11,7 @@
     };
     keymap {
         compatible = "zmk,keymap";
-        default_layer { bindings = <&kp A &kp E &mt LSHIFT SPACE &kp D>; };
+        default_layer { bindings = <&rtd 0 &rtd 0 &rtd 1 &kp D>; };
     };
 };
 &kscan { events = <ZMK_MOCK_PRESS(1,1,3000) ZMK_MOCK_RELEASE(1,1,10)>; };

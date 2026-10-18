@@ -24,6 +24,7 @@ type BehaviorOption = { id: number; name: string };
 const emptyBinding = () => Binding.create();
 const emptyConfig = () =>
   Config.create({
+    singleBinding: emptyBinding(),
     doubleBinding: emptyBinding(),
     tripleBinding: emptyBinding(),
   });
@@ -39,8 +40,7 @@ function stateOf(response: Response | null): State {
 function used(config: Config) {
   return (
     config.enabled ||
-    config.position !== 0 ||
-    config.delaySingle ||
+    (config.singleBinding?.behaviorId ?? 0) !== 0 ||
     (config.doubleBinding?.behaviorId ?? 0) !== 0 ||
     (config.tripleBinding?.behaviorId ?? 0) !== 0
   );
@@ -221,9 +221,15 @@ export function TapDanceEditor() {
       )
     );
   const validate = (config: Config) => {
-    if (!uint32(config.position))
-      return "Position must be a non-negative integer.";
-    for (const binding of [config.doubleBinding, config.tripleBinding]) {
+    if (config.enabled && !config.singleBinding?.behaviorId)
+      return "Select a single-tap behavior for an enabled dance.";
+    if (config.tripleBinding?.behaviorId && !config.doubleBinding?.behaviorId)
+      return "Select a double-tap behavior before adding a triple tap.";
+    for (const binding of [
+      config.singleBinding,
+      config.doubleBinding,
+      config.tripleBinding,
+    ]) {
       if (
         binding &&
         ![binding.behaviorId, binding.param1, binding.param2].every(uint32)
@@ -251,13 +257,10 @@ export function TapDanceEditor() {
     <section className="card">
       <h2>Runtime tap dances</h2>
       <p>
-        Double taps wait for a possible third tap; triple taps take precedence.
-        Unassigned dances fall back to normal keys. Positions are zero-based
-        physical key positions.
-      </p>
-      <p>
-        Delayed mode waits before sending a single normal key. Immediate mode
-        sends every normal key immediately and adds the dance output.
+        Assign <code>&amp;rtd &lt;slot&gt;</code> to a key in the keymap, then
+        configure that slot below. Single, double and triple taps invoke the
+        selected behaviors. The last configured tap count resolves immediately;
+        other counts wait for the interval or another key press.
       </p>
       <p>Apply changes RAM only. Save writes the selected setting to flash.</p>
       {locked && <p className="locked-banner">ZMK Studio is locked.</p>}
@@ -307,42 +310,20 @@ export function TapDanceEditor() {
             />{" "}
             Enabled
           </label>
-          <label>
-            Position{" "}
-            <input
-              aria-label={`Position ${index + 1}`}
-              type="number"
-              min="0"
-              value={
-                Number.isNaN(slots[index].position) ? "" : slots[index].position
-              }
-              onChange={(event) =>
-                edit(index, { position: event.target.valueAsNumber })
-              }
-            />
-          </label>
-          <label>
-            Normal key timing{" "}
-            <select
-              aria-label={`Timing ${index + 1}`}
-              value={slots[index].delaySingle ? "delayed" : "immediate"}
-              onChange={(event) =>
-                edit(index, { delaySingle: event.target.value === "delayed" })
-              }
-            >
-              <option value="delayed">Delayed single key</option>
-              <option value="immediate">Immediate normal keys + dance</option>
-            </select>
-          </label>
-          {(["doubleBinding", "tripleBinding"] as const).map((key) => (
-            <BindingEditor
-              key={key}
-              label={`${key === "doubleBinding" ? "Double" : "Triple"} ${index + 1}`}
-              binding={slots[index][key] ?? emptyBinding()}
-              options={behaviors}
-              onChange={(binding) => edit(index, { [key]: binding })}
-            />
-          ))}
+          <p>
+            Keymap binding: <code>&amp;rtd {index}</code>
+          </p>
+          {(["singleBinding", "doubleBinding", "tripleBinding"] as const).map(
+            (key) => (
+              <BindingEditor
+                key={key}
+                label={`${key === "singleBinding" ? "Single" : key === "doubleBinding" ? "Double" : "Triple"} ${index + 1}`}
+                binding={slots[index][key] ?? emptyBinding()}
+                options={behaviors}
+                onChange={(binding) => edit(index, { [key]: binding })}
+              />
+            )
+          )}
           <div className="editor-actions">
             <button onClick={() => write(index, false)}>
               Apply tap dance {index + 1}
@@ -369,7 +350,7 @@ export function TapDanceEditor() {
           onClick={() => {
             const index = slots.findIndex((_, slot) => !visible.includes(slot));
             if (index < 0) return;
-            edit(index, { ...emptyConfig(), enabled: true, delaySingle: true });
+            edit(index, { ...emptyConfig(), enabled: true });
             setVisible((current) => [...current, index].sort((a, b) => a - b));
             setMessage("");
           }}
@@ -412,7 +393,7 @@ function BindingEditor({
               )
             }
           >
-            <option value="0">None (normal keys)</option>
+            <option value="0">None</option>
             {options.map((option) => (
               <option key={option.id} value={option.id}>
                 {option.name} ({option.id})

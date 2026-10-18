@@ -1,29 +1,22 @@
 # Runtime tap dance Web UI
 
 Connect a keyboard running this module over USB (Web Serial) or Bluetooth (Web
-Bluetooth), using Chrome or Edge on HTTPS or localhost. Studio must be enabled
-in the firmware. If Studio is locked, press the keyboard's `&studio_unlock` key
-and retry. The page attempts one reconnect to a previously paired serial port.
+Bluetooth) in Chrome or Edge on HTTPS or localhost. Unlock Studio if prompted.
 
-The editor loads all firmware slots once per connection. Set the global tap
-interval (1–2000 ms), then **Add tap dance** and choose a zero-based physical key
-position. Multiple enabled dances must use different positions.
+The editor loads all slots once per connection. Set the global tap interval
+(1–2000 ms), then add a tap dance. The displayed slot number is the parameter
+to assign in the keymap, for example `&rtd 0`.
 
-For each dance, choose delayed single keys or immediate normal keys. Delayed
-mode waits for the interval before sending a single normal key. Immediate mode
-sends every normal key immediately and adds the double/triple behavior output.
-Double waits for a possible triple; triple takes precedence. If the recognized
-dance has no behavior, its normal keys are sent instead.
+Choose a single-tap behavior for every enabled dance. Double and triple are
+optional; triple requires double. The last configured tap count invokes its
+action immediately. Other counts wait for the interval or another key press.
+Behavior display names come from Studio metadata when available. Numeric IDs
+remain editable; ID 0 means no behavior. Parameters use the same unsigned
+values as Studio keymap bindings. Firmware validation errors keep your draft.
 
-Choose double and triple behaviors by their Studio display name when metadata
-is available. Numeric behavior IDs remain editable as a fallback; ID 0 means no
-behavior. Parameters use the same unsigned values as Studio behavior bindings.
-The firmware validates positions, duplicate positions, behavior IDs and
-parameters. Errors preserve your draft.
-
-**Apply** changes the selected slot or interval in RAM. **Save** also stores it
-in flash for the next boot. Deletion has separate RAM and flash buttons.
-**Reload from keyboard** replaces unsaved drafts with current device settings.
+**Apply** changes the selected slot or interval in RAM. **Save** also writes
+flash. Deletion has separate RAM and flash buttons. **Reload from keyboard**
+replaces unsaved drafts with current device settings.
 
 ## Development
 

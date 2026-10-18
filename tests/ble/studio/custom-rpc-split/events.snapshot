@@ -2,14 +2,14 @@ split peripheral connected
 split position subscription ready
 host <dbg> ble_studio_host: handle_frame: [RPC RESPONSE 1]
 host <dbg> ble_studio_host: handle_frame: payload
-host 0a 16 08 01 a2 06 11 12 0f 12 0d 12 0b 12 04 22
-host 00 2a 00 18 c8 01 20 10
+host 0a 18 08 01 a2 06 13 12 11 12 0f 12 0d 12 06 12
+host 00 22 00 2a 00 18 c8 01 20 10
 host <dbg> ble_studio_host: handle_frame: [RPC RESPONSE 2]
 host <dbg> ble_studio_host: handle_frame: payload
-host 0a 16 08 02 a2 06 11 12 0f 12 0d 12 0b 12 04 22
-host 00 2a 00 18 fa 01 20 10
+host 0a 18 08 02 a2 06 13 12 11 12 0f 12 0d 12 06 12
+host 00 22 00 2a 00 18 fa 01 20 10
 host <dbg> ble_studio_host: handle_frame: [RPC RESPONSE 3]
 host <dbg> ble_studio_host: handle_frame: payload
-host 0a 16 08 03 a2 06 11 12 0f 12 0d 12 0b 12 04 22
-host 00 2a 00 18 fa 01 20 10
+host 0a 18 08 03 a2 06 13 12 11 12 0f 12 0d 12 06 12
+host 00 22 00 2a 00 18 fa 01 20 10
 host <dbg> ble_studio_host: handle_frame: [ALL RESPONSES RECEIVED]

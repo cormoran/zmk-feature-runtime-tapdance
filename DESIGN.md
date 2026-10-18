@@ -1,79 +1,39 @@
-# Runtime tapdance
+# Runtime tap dance design
 
-## Scope and semantics
+## Invocation and recognition
 
-A central-side position-state listener recognizes repeated press/release cycles at a
-configured physical key position, without replacing the keymap binding. Up to 16
-independent slots are configurable at runtime; enabled positions must be unique.
-The default global interval is 200 ms (valid 1–2000 ms), measured from each press
-to the next press; a press at the exact deadline starts a new sequence. A release
-must occur between presses. Triple is decided on the third press; double waits
-for the second press's deadline so a triple takes precedence.
+The keymap invokes `&rtd <slot>` through a one-parameter behavior. Its callback
+starts or advances a sequence identified by physical position and split source.
+The same slot can be bound to several positions and layers. The position-state
+listener only resolves undecided dances on another key press and observes key
+release if the keymap binding changes while the key is held. It never captures
+or replays the ordinary keymap event. All state changes use one mutex and timer.
 
-Each slot selects immediate or delayed normal keys. Immediate mode bubbles every
-normal press/release, then also invokes the matched binding. Delayed mode captures
-the position events: a single is replayed after the deadline, preserving balanced
-press/release; multi-taps suppress normal keys. An unassigned double/triple falls
-back to replaying captured normal keys. A long first hold becomes a normal held
-key at its deadline and its later release bubbles. A matched held dance binding
-releases when the physical key releases. Other positions continue normally; the
-module does not alter layers, existing combos or compile-time tapdance policies.
-Actions use dedicated virtual positions (0x40000000 + slot) so immediate normal
-hold-tap behaviors cannot alias action hold-taps. Preserve the physical event
-source in action calls. Active sequences snapshot their configuration; edits affect subsequent sequences.
-Timers and listener access must be serialized. Captured replay resumes after this
-listener to avoid recursive recognition. Preserve event source for split positions.
+Each sequence snapshots the slot configuration, layer, source, and global interval
+at its first press. Single is required for enabled slots. Double is optional;
+triple requires double. The last configured count resolves on its press. Lesser
+counts resolve at the interval deadline or when another key is pressed. The
+chosen action receives the original position/layer/source and stays pressed
+until the final physical release. A press at the exact deadline starts a new
+sequence. An empty or disabled slot is a no-op.
 
-## Runtime API and persistence
+## Settings and RPC
 
-`include/cormoran/runtime_tapdance/runtime_tapdance.h` exposes:
-- config: enabled, position, delay_single, double_binding/triple_binding (custom
-  settings behavior values containing behavior_id, param1, param2).
-- read(index, config), write(index, config, persist), delete(index, persist),
-  timeout_ms(), set_timeout_ms(value, persist), max_count().
+`cormoran__runtime_tapdance` stores a global `timeout_ms` INT32 and an array
+of slot BYTES values in custom-settings. A version-2 packed slot is 38 bytes:
+version, enabled flag, then three `(behavior_id,param1,param2)` tuples. Validate
+all bindings with ZMK metadata, require a single action for enabled slots, and
+reject a triple action without a double. Slot updates affect only future
+sequences. The runtime tap dance behavior itself is rejected as an action to
+avoid recursive invocation. The module's custom RPC exposes get/set/remove per
+slot and a global interval setter. Its responses include all three bindings and
+the slot limit.
+RX/TX buffers are at least 256 bytes; response storage is static.
 
-Register timeout_ms (INT32) and slots (BYTES array) with custom-settings under
-`cormoran__runtime_tapdance`. A versioned packed slot contains the two behavior
-local IDs and parameters. Validate positions, duplicate enabled positions,
-behavior IDs/parameters and bounds before writes. Empty binding ID 0 means absent.
-Persistence uses the custom-settings registry, loaded lazily when the first
-position event occurs (settings_load happens after SYS_INIT). No independent
-settings backend. Generic settings changes must undergo validation before use.
-Settings can be imported/exported through the existing settings subsystem.
+## UI and verification
 
-## RPC
-
-Subsystem `cormoran__runtime_tapdance` uses the template registration/codec.
-Proto Request oneof: get(index), set(index, config, persist), remove(index,
-persist), set_interval(interval_ms,persist). Response oneof: state or error.
-State contains index, config, interval_ms, max_count. Config has enabled,
-position, delay_single, double_binding and triple_binding. Binding contains
-uint32 behavior_id,param1,param2. Error contains int32 code,string message.
-Every config/binding submessage sets nanopb has_*; messages stay under 128 bytes;
-configure RX/TX buffers to at least 256 bytes and compile-time assert fit.
-Writes reject invalid configuration and return errors. Read/write return current
-slot and globals; the UI loads slots one at a time. No bulk messages/notifications.
-
-## Web
-
-Connection controls from template. One stable protobuf codec and effects depend
-on scalar subsystem index. Load global state and slots once per connection.
-Provide interval input and a list of enabled/disabled entries with editable
-position, delayed/immediate mode and double/triple behavior ID + both parameters.
-Use Studio behavior metadata for user-friendly behavior selection when available.
-Add/delete entries; Apply vs Save distinguish RAM from persistent settings.
-Explain immediate additive output, delayed keys, triple precedence and fallback.
-Use bounded integer validation and surface RPC errors without losing draft input.
-
-## Validation and phases
-
-A: initialize template, test it, commit.
-B: implement settings/API and position listener, paired native_sim tests observing
-normal keycode events and behavior output (single/hold/double/triple, absent
-binding fallback, immediate, disabled, exact deadline, simultaneous positions,
-configuration edit mid-sequence, invalid IDs/positions/duplicates).
-C: proto/handler/Web and mock RPC UI tests including loader call count regression,
-add/edit/delete, validation and failed RPC; update Renode RPC and Web E2E cases.
-D: build USB and split targets, run native_sim, web lint/test/root+Pages builds,
-pre-commit, Renode RPC/E2E where available; push PR and follow CI to completion.
-Build directories belong to this worktree, never the profile-wide build directory.
+The Web UI lists slot numbers, three action editors, and the global interval.
+It uses Studio behavior metadata, supports RAM apply and flash save, and keeps
+drafts after failed writes. Native-sim tests drive public keymap events and
+check HID output. Renode tests round-trip settings over real Studio RPC, while
+browser E2E uses the same firmware. ARM builds cover Studio, no RPC, and split.

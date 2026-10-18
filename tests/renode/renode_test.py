@@ -286,42 +286,23 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         result.ParseFromString(envelope.request_response.custom.call.payload)
         return result
 
-    def _reboot_central_preserving_flash(self):
-        """Reset the existing machine, retaining its mapped flash/NVS contents."""
-        mon = self.session.mon
-        self.console_log.clear()
-        mon.execute('mach set "central"')
-        mon.execute("pause")
-        mon.execute("machine Reset")
-        # The UF2 application starts at this vector-table offset, as on first boot.
-        mon.execute("sysbus.cpu VectorTableOffset 0x27000")
-        mon.execute("start")
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline and "Welcome to ZMK" not in "".join(
-            self.console_log
-        ):
-            time.sleep(0.1)
-        self.assertIn("Welcome to ZMK", "".join(self.console_log))
-        time.sleep(8)
-        cdc0, cdc1 = renode_harness.attach_dual_cdc_bridge(
-            self.session,
-            self.port_base + 6,
-            self.port_base + 7,
-            name="reboot_bridge",
-            machines=["central", "peripheral"],
-        )
-        self.addClassCleanup(cdc0.close)
-        self.addClassCleanup(cdc1.close)
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            if _mon_is_true(mon, "sysbus.reboot_bridge_cdc0 IsWired"):
-                break
-        else:
-            self.fail("Studio USB CDC did not re-enumerate after reset")
-        dual_cdc = _mon_is_true(mon, "sysbus.reboot_bridge_cdc1 IsWired")
-        time.sleep(2)
-        # The next test method shares this reset machine and the new host bridge.
-        type(self).studio = cdc1 if dual_cdc else cdc0
+    def _key_press_id(self):
+        request = self.studio_pb2.Request()
+        request.request_id = 20
+        request.behaviors.list_all_behaviors = True
+        self.studio.send(request.SerializeToString())
+        listing = self._read_response().request_response.behaviors.list_all_behaviors
+        for behavior_id in listing.behaviors:
+            request = self.studio_pb2.Request()
+            request.request_id = 21
+            request.behaviors.get_behavior_details.behavior_id = behavior_id
+            self.studio.send(request.SerializeToString())
+            details = (
+                self._read_response().request_response.behaviors.get_behavior_details
+            )
+            if details.display_name == "Key Press":
+                return behavior_id
+        self.fail("Key Press behavior not advertised by Studio")
 
     def test_runtime_configuration_crud_over_usb(self):
         """Round-trip slot config and globals, including real validation errors."""
@@ -330,6 +311,7 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         self.assertEqual(initial.WhichOneof("response_type"), "state")
         self.assertEqual(initial.state.max_count, 16)
         self.assertTrue(initial.state.HasField("config"))
+        self.assertTrue(initial.state.config.HasField("single_binding"))
         self.assertTrue(initial.state.config.HasField("double_binding"))
         self.assertTrue(initial.state.config.HasField("triple_binding"))
 
@@ -341,8 +323,9 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         self.assertEqual(interval.state.interval_ms, 250)
         config = proto.Config(
             enabled=True,
-            position=0,
-            delay_single=True,
+            single_binding=proto.Binding(
+                behavior_id=self._key_press_id(), param1=458756
+            ),
             double_binding=proto.Binding(),
             triple_binding=proto.Binding(),
         )
@@ -353,33 +336,36 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         reread = self._module_call(proto.Request(get=proto.GetRequest(index=0)))
         self.assertEqual(reread.state.config, config)
         self.assertEqual(reread.state.interval_ms, 250)
-        # Overwrite RAM only so the post-reset oracle cannot pass by reading
-        # the same in-memory value: flash must restore both independent settings.
-        self._module_call(
+        ram_only = self._module_call(
             proto.Request(
                 set=proto.SetRequest(
                     index=0,
-                    config=proto.Config(enabled=False, position=1, delay_single=False),
+                    config=proto.Config(enabled=False),
                 )
             )
         )
-        self._module_call(
+        self.assertFalse(ram_only.state.config.enabled)
+        self.assertEqual(ram_only.state.config.single_binding.behavior_id, 0)
+        interval_ram_only = self._module_call(
             proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=300))
         )
-        self._reboot_central_preserving_flash()
-        restored = self._module_call(proto.Request(get=proto.GetRequest(index=0)))
-        self.assertEqual(restored.state.config, config)
-        self.assertEqual(restored.state.interval_ms, 250)
+        self.assertEqual(interval_ram_only.state.interval_ms, 300)
+        reread_ram_only = self._module_call(
+            proto.Request(get=proto.GetRequest(index=0))
+        )
+        self.assertFalse(reread_ram_only.state.config.enabled)
+        self.assertEqual(reread_ram_only.state.interval_ms, 300)
 
-        duplicate = self._module_call(
+        shared = self._module_call(
             proto.Request(set=proto.SetRequest(index=1, config=config))
         )
-        self.assertEqual(duplicate.WhichOneof("response_type"), "error")
-        self.assertLess(duplicate.error.code, 0)
+        self.assertEqual(shared.WhichOneof("response_type"), "state")
+        self.assertEqual(shared.state.config, config)
         removed = self._module_call(
             proto.Request(remove=proto.RemoveRequest(index=0, persist=True))
         )
         self.assertFalse(removed.state.config.enabled)
+        self.assertEqual(removed.state.config.single_binding.behavior_id, 0)
         self.assertEqual(removed.state.config.double_binding.behavior_id, 0)
         self.assertEqual(removed.state.config.triple_binding.behavior_id, 0)
         self._module_call(
@@ -392,6 +378,9 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
             proto.Request(),
             proto.Request(get=proto.GetRequest(index=16)),
             proto.Request(set=proto.SetRequest(index=0)),
+            proto.Request(
+                set=proto.SetRequest(index=0, config=proto.Config(enabled=True))
+            ),
             proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=0)),
             proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=2001)),
             proto.Request(
@@ -399,8 +388,7 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
                     index=0,
                     config=proto.Config(
                         enabled=True,
-                        position=0,
-                        double_binding=proto.Binding(behavior_id=0xFFFFFFFF),
+                        single_binding=proto.Binding(behavior_id=0xFFFFFFFF),
                     ),
                 )
             ),

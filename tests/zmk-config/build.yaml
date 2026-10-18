@@ -42,7 +42,9 @@ include:
   - artifact: usb_wired_central
     board: xiao_ble//zmk
     shield: renode_usb_wired_split
-    cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_RUNTIME_TAPDANCE=y -DCONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y -DCONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE=256 -DCONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=256
+    # The Renode fixture has no physical Studio unlock key; behavior details
+    # are secured, and the RPC test reads them to choose a real local ID.
+    cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_STUDIO_LOCKING=n -DCONFIG_ZMK_RUNTIME_TAPDANCE=y -DCONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y -DCONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE=256 -DCONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=256
     snippets:
       - studio-rpc-usb-uart
 

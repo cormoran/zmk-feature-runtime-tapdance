@@ -29,6 +29,7 @@ jest.mock("@zmkfirmware/zmk-studio-ts-client", () => ({
 const client = jest.mocked(call_rpc);
 const blank = () =>
   Config.create({
+    singleBinding: Binding.create(),
     doubleBinding: Binding.create(),
     tripleBinding: Binding.create(),
   });
@@ -105,7 +106,7 @@ beforeEach(() => {
     const index =
       inner.get?.index ?? inner.set?.index ?? inner.remove?.index ?? 0;
     if (rejectWrite && !inner.get)
-      response = { error: { code: -22, message: "Invalid position" } };
+      response = { error: { code: -22, message: "Invalid binding" } };
     else {
       if (inner.set) database[index] = inner.set.config!;
       if (inner.remove) database[index] = blank();
@@ -137,8 +138,10 @@ it("loads every slot and behavior metadata only once after renders settle", asyn
   expect(requests.map((request) => request.get?.index)).toEqual([0, 1, 2]);
   const count = requests.length;
   await userEvent.click(screen.getByRole("button", { name: "Add tap dance" }));
-  await userEvent.clear(screen.getByLabelText("Position 1"));
-  await userEvent.type(screen.getByLabelText("Position 1"), "1");
+  await userEvent.selectOptions(
+    screen.getByLabelText("Single 1 behavior"),
+    "1"
+  );
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
   });
@@ -151,9 +154,9 @@ it("adds and edits multiple dances, applies RAM, saves flash and deletes", async
   mount();
   await loaded();
   await user.click(screen.getByRole("button", { name: "Add tap dance" }));
-  await user.clear(screen.getByLabelText("Position 1"));
-  await user.type(screen.getByLabelText("Position 1"), "1");
-  await user.selectOptions(screen.getByLabelText("Timing 1"), "immediate");
+  await user.selectOptions(screen.getByLabelText("Single 1 behavior"), "1");
+  await user.clear(screen.getByLabelText("Single 1 parameter 1"));
+  await user.type(screen.getByLabelText("Single 1 parameter 1"), "458755");
   await waitFor(() =>
     expect(screen.getByLabelText("Double 1 behavior")).toBeInTheDocument()
   );
@@ -168,8 +171,7 @@ it("adds and edits multiple dances, applies RAM, saves flash and deletes", async
     persist: false,
     config: {
       enabled: true,
-      position: 1,
-      delaySingle: false,
+      singleBinding: { behaviorId: 1, param1: 458755 },
       doubleBinding: { behaviorId: 1, param1: 458756 },
       tripleBinding: { behaviorId: 2 },
     },
@@ -178,19 +180,23 @@ it("adds and edits multiple dances, applies RAM, saves flash and deletes", async
   await screen.findByText("Saved to flash.");
   expect(requests.at(-1)?.set?.persist).toBe(true);
   await user.click(screen.getByRole("button", { name: "Add tap dance" }));
-  expect(screen.getByLabelText("Position 2")).toBeInTheDocument();
+  expect(screen.getByLabelText("Single 2 behavior ID")).toBeInTheDocument();
   await user.click(
     screen.getByRole("button", { name: "Delete tap dance 1 (flash)" })
   );
   await waitFor(() =>
-    expect(screen.queryByLabelText("Position 1")).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText("Single 1 behavior ID")
+    ).not.toBeInTheDocument()
   );
   expect(requests.at(-1)?.remove).toEqual({ index: 0, persist: true });
   await user.click(
     screen.getByRole("button", { name: "Delete tap dance 2 (RAM)" })
   );
   await waitFor(() =>
-    expect(screen.queryByLabelText("Position 2")).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText("Single 2 behavior ID")
+    ).not.toBeInTheDocument()
   );
   expect(requests.at(-1)?.remove).toEqual({ index: 1, persist: false });
 });
@@ -216,6 +222,7 @@ it("validates integer bounds and edits global interval separately", async () => 
   await screen.findByText("Saved to flash.");
   expect(requests.at(-1)?.setInterval?.persist).toBe(true);
   await user.click(screen.getByRole("button", { name: "Add tap dance" }));
+  await user.selectOptions(screen.getByLabelText("Single 1 behavior"), "1");
   await user.clear(screen.getByLabelText("Double 1 parameter 2"));
   await user.type(screen.getByLabelText("Double 1 parameter 2"), "4294967296");
   const count = requests.length;
@@ -224,19 +231,40 @@ it("validates integer bounds and edits global interval separately", async () => 
   expect(requests).toHaveLength(count);
 });
 
+it("requires a single action and a double before a triple", async () => {
+  const user = userEvent.setup();
+  mount();
+  await loaded();
+  await user.click(screen.getByRole("button", { name: "Add tap dance" }));
+  expect(screen.getByText("&rtd 0")).toBeInTheDocument();
+  const count = requests.length;
+  await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("single-tap");
+  expect(requests).toHaveLength(count);
+  await user.selectOptions(screen.getByLabelText("Single 1 behavior"), "1");
+  await user.selectOptions(screen.getByLabelText("Triple 1 behavior"), "2");
+  await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("double-tap");
+  expect(requests).toHaveLength(count);
+  await user.selectOptions(screen.getByLabelText("Double 1 behavior"), "1");
+  await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
+  await screen.findByText(/Applied in RAM/);
+});
+
 it("keeps the draft when firmware rejects a write", async () => {
   const user = userEvent.setup();
   mount();
   await loaded();
   await user.click(screen.getByRole("button", { name: "Add tap dance" }));
-  await user.clear(screen.getByLabelText("Position 1"));
-  await user.type(screen.getByLabelText("Position 1"), "999");
+  await user.selectOptions(screen.getByLabelText("Single 1 behavior"), "1");
+  await user.clear(screen.getByLabelText("Single 1 parameter 1"));
+  await user.type(screen.getByLabelText("Single 1 parameter 1"), "999");
   rejectWrite = true;
   await user.click(screen.getByRole("button", { name: "Apply tap dance 1" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Invalid position (-22)"
+    "Invalid binding (-22)"
   );
-  expect(screen.getByLabelText("Position 1")).toHaveValue(999);
+  expect(screen.getByLabelText("Single 1 parameter 1")).toHaveValue(999);
 });
 
 it("retries a rejected write once Studio unlocks", async () => {
@@ -244,6 +272,7 @@ it("retries a rejected write once Studio unlocks", async () => {
   mount();
   await loaded();
   await user.click(screen.getByRole("button", { name: "Add tap dance" }));
+  await user.selectOptions(screen.getByLabelText("Single 1 behavior"), "1");
   unlockRequired = true;
   await user.click(screen.getByRole("button", { name: "Save tap dance 1" }));
   await screen.findByRole("button", { name: "Retry" });
@@ -285,6 +314,7 @@ it("clears parameters when selecting None or entering behavior ID zero", async (
   mount();
   await loaded();
   await user.click(screen.getByRole("button", { name: "Add tap dance" }));
+  await user.selectOptions(screen.getByLabelText("Single 1 behavior"), "1");
   await waitFor(() =>
     expect(screen.getByLabelText("Double 1 behavior")).toBeInTheDocument()
   );

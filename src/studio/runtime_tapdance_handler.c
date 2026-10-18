@@ -55,10 +55,10 @@ static int set_state(cormoran_runtime_tapdance_Response *resp, uint32_t index) {
     state->max_count = zmk_runtime_tapdance_max_count();
     state->has_config = true;
     state->config.enabled = config.enabled;
-    state->config.position = config.position;
-    state->config.delay_single = config.delay_single;
+    state->config.has_single_binding = true;
     state->config.has_double_binding = true;
     state->config.has_triple_binding = true;
+    encode_binding(&state->config.single_binding, &config.single_binding);
     encode_binding(&state->config.double_binding, &config.double_binding);
     encode_binding(&state->config.triple_binding, &config.triple_binding);
     return 0;
@@ -92,8 +92,9 @@ static bool dispatch_request(const zmk_custom_CallRequest *raw_request,
         const cormoran_runtime_tapdance_Config *source = &set->config;
         struct zmk_runtime_tapdance_config config = {
             .enabled = source->enabled,
-            .position = source->position,
-            .delay_single = source->delay_single,
+            .single_binding = {.behavior_id = source->single_binding.behavior_id,
+                               .param1 = source->single_binding.param1,
+                               .param2 = source->single_binding.param2},
             .double_binding = {.behavior_id = source->double_binding.behavior_id,
                                .param1 = source->double_binding.param1,
                                .param2 = source->double_binding.param2},
@@ -120,7 +121,9 @@ static bool dispatch_request(const zmk_custom_CallRequest *raw_request,
         rc = set_state(resp, index);
     }
     if (rc) {
-        set_error(resp, rc, "Invalid configuration or settings write failed");
+        set_error(resp, rc,
+                  rc == -ELOOP ? "A tap dance cannot invoke itself"
+                               : "Invalid configuration or settings write failed");
     }
     return true;
 }

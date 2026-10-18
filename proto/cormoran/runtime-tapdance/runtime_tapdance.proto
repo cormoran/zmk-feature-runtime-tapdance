@@ -8,8 +8,7 @@ message Binding {
 }
 message Config {
     bool enabled = 1;
-    uint32 position = 2;
-    bool delay_single = 3;
+    Binding single_binding = 2;
     Binding double_binding = 4;
     Binding triple_binding = 5;
 }

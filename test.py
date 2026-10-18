@@ -96,7 +96,9 @@ class WestCommandsTests(unittest.TestCase):
                         "CONFIG_ZMK_RUNTIME_TAPDANCE=y",
                         "CONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y",
                     ],
-                    device=[],
+                    device=[
+                        "DT_COMPAT_HAS_OKAY_cormoran_zmk_behavior_runtime_tapdance"
+                    ],
                 ),
                 "runtime_tapdance_board_without_rpc": ConfigAndDeviceTree(
                     config=[
@@ -104,7 +106,9 @@ class WestCommandsTests(unittest.TestCase):
                         "# CONFIG_ZMK_STUDIO is not set",
                         NotFound("CONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC"),
                     ],
-                    device=[],
+                    device=[
+                        "DT_COMPAT_HAS_OKAY_cormoran_zmk_behavior_runtime_tapdance"
+                    ],
                 ),
                 # DUT of the web UI end-to-end test (web/e2e/): as
                 # runtime_tapdance_board_with_rpc, but unlocked -- see build.yaml.
@@ -114,7 +118,9 @@ class WestCommandsTests(unittest.TestCase):
                         "CONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y",
                         "# CONFIG_ZMK_STUDIO_LOCKING is not set",
                     ],
-                    device=[],
+                    device=[
+                        "DT_COMPAT_HAS_OKAY_cormoran_zmk_behavior_runtime_tapdance"
+                    ],
                 ),
                 "custom_settings_board": ConfigAndDeviceTree(
                     config=[
@@ -129,7 +135,9 @@ class WestCommandsTests(unittest.TestCase):
                         "CONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=256",
                         "CONFIG_ZMK_LOW_PRIORITY_THREAD_STACK_SIZE=2048",
                     ],
-                    device=[],
+                    device=[
+                        "DT_COMPAT_HAS_OKAY_cormoran_zmk_behavior_runtime_tapdance"
+                    ],
                 ),
                 # Hardware-free Renode testing pair (see README.md's
                 # "Hardware-free Renode testing" section): a wired split whose
@@ -146,8 +154,11 @@ class WestCommandsTests(unittest.TestCase):
                         "CONFIG_ZMK_SPLIT_ROLE_CENTRAL=y",
                         "CONFIG_ZMK_USB=y",
                         "# CONFIG_ZMK_BLE is not set",
+                        "# CONFIG_ZMK_STUDIO_LOCKING is not set",
                     ],
-                    device=[],
+                    device=[
+                        "DT_COMPAT_HAS_OKAY_cormoran_zmk_behavior_runtime_tapdance"
+                    ],
                 ),
                 "usb_wired_peripheral": ConfigAndDeviceTree(
                     config=[
