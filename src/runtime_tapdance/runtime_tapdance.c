@@ -547,10 +547,43 @@ static int legacy_initialized(const zmk_event_t *event) {
     ARG_UNUSED(event);
     uint32_t highest_id_plus_one = 0;
     bool saw_legacy = false;
+    /* Reserve all legacy IDs before importing any entry. If migration stops
+     * partway through (for example, because the pool is full), Create must
+     * never assign an ID that a keymap already uses for a legacy slot. */
     for (uint32_t index = 0; index < COUNT; index++) {
         struct zmk_custom_setting_value value;
         int ret = zmk_custom_setting_read_array_by_key(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID, "slots",
                                                        index, &value);
+        if (ret == -ENOENT || (ret == 0 && value.size == 0)) {
+            continue;
+        }
+        if (ret < 0 || value.type != ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES ||
+            value.size != LEGACY_PACKED_SIZE || value.bytes_value[0] != 3) {
+            LOG_ERR("Invalid legacy tap dance slot %u", index);
+            return ZMK_EV_EVENT_BUBBLE;
+        }
+        if (sys_get_le32(value.bytes_value + 1) != 0) {
+            highest_id_plus_one = index + 1;
+        }
+    }
+    struct zmk_custom_setting_value next;
+    int ret = zmk_custom_setting_read_by_key(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
+                                             ZMK_RUNTIME_TAPDANCE_NEXT_ID_KEY, &next);
+    if (ret == 0 && next.type == ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32 && next.int32_value >= 0 &&
+        highest_id_plus_one > (uint32_t)next.int32_value) {
+        next.int32_value = highest_id_plus_one;
+        ret = zmk_custom_setting_write_by_key(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
+                                              ZMK_RUNTIME_TAPDANCE_NEXT_ID_KEY, &next,
+                                              ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST);
+        if (ret < 0) {
+            LOG_ERR("Could not reserve legacy tap dance IDs: %d", ret);
+            return ZMK_EV_EVENT_BUBBLE;
+        }
+    }
+    for (uint32_t index = 0; index < COUNT; index++) {
+        struct zmk_custom_setting_value value;
+        ret = zmk_custom_setting_read_array_by_key(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID, "slots",
+                                                   index, &value);
         if (ret == -ENOENT || (ret == 0 && value.size == 0)) {
             continue;
         }
@@ -590,9 +623,8 @@ static int legacy_initialized(const zmk_event_t *event) {
             highest_id_plus_one = id + 1;
         }
     }
-    struct zmk_custom_setting_value next;
-    int ret = zmk_custom_setting_read_by_key(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
-                                             ZMK_RUNTIME_TAPDANCE_NEXT_ID_KEY, &next);
+    ret = zmk_custom_setting_read_by_key(ZMK_RUNTIME_TAPDANCE_SUBSYSTEM_ID,
+                                         ZMK_RUNTIME_TAPDANCE_NEXT_ID_KEY, &next);
     if (ret == 0 && next.type == ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32 && next.int32_value >= 0 &&
         highest_id_plus_one > (uint32_t)next.int32_value) {
         next.int32_value = highest_id_plus_one;

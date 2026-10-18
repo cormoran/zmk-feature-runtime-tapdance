@@ -1,10 +1,11 @@
 # Studio BLE runtime tap dance configuration
 
 The oracle first verifies the peripheral connection and position-state
-subscription. The split central answers three requests over real Studio GATT: read empty
-slot 0 (interval 200 ms), set interval to 250 ms in RAM, read slot 0 again
-(interval 250 ms). The byte oracle checks both empty binding submessages and
-capacity 16. Module RPC writes suppress the generic settings notification so
+subscription. The split central answers three requests over real Studio GATT:
+read missing ID 0, set the global interval to 250 ms in RAM, then read missing
+ID 0 again. The byte oracle checks the missing-ID error and the global response
+with capacity 16, name limit 24 bytes, pool size 1024 bytes, and dirty state.
+Module RPC writes suppress the generic settings notification so
 only one reply is emitted per request; this avoids starving the reply while the
 RPC workqueue is occupied by its own handler.
 
