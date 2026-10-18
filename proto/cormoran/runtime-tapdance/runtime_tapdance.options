@@ -1,0 +1,6 @@
+cormoran.runtime_tapdance.ErrorResponse.message max_size:64
+cormoran.runtime_tapdance.CreateRequest.name max_size:24
+cormoran.runtime_tapdance.RenameRequest.name max_size:24
+cormoran.runtime_tapdance.State.name max_size:24
+cormoran.runtime_tapdance.Summary.name max_size:24
+cormoran.runtime_tapdance.ListResponse.entries max_count:4

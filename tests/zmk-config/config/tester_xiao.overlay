@@ -2,3 +2,4 @@
 &board_cdc_acm_uart {
 	status = "disabled";
 };
+#include <behaviors/runtime_tapdance.dtsi>

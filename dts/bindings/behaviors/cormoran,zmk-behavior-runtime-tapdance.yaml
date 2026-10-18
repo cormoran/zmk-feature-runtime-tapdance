@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: MIT
+description: Configurable runtime tap dance
+compatible: "cormoran,zmk-behavior-runtime-tapdance"
+include: one_param.yaml

@@ -75,3 +75,28 @@
   font-size: 0.85rem;
   color: #666;
 }
+
+.dance-slot {
+  margin: 1rem 0;
+}
+.dance-slot label,
+.binding-editor label {
+  display: block;
+  margin: 0.6rem 0;
+}
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.8rem 0;
+}
+.binding-editor {
+  border-top: 1px solid #ccc;
+  margin-top: 1rem;
+}
+input[type="number"] {
+  max-width: 12rem;
+}
+[role="alert"] {
+  color: #c62828;
+}

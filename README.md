@@ -1,236 +1,154 @@
-# cormoran's ZMK Module Template for ZMK (with Custom Studio RPC)
+# zmk-feature-runtime-tapdance
 
-![ZMK Version](https://img.shields.io/badge/ZMK-master-blue)
-[![Test](https://github.com/cormoran/zmk-module-template/actions/workflows/zmk-module.yml/badge.svg?branch=main)](https://github.com/cormoran/zmk-module-template/actions/workflows/zmk-module.yml) [![Devcontainer](https://github.com/cormoran/zmk-module-template/actions/workflows/devcontainer.yml/badge.svg?branch=main)](https://github.com/cormoran/zmk-module-template/actions/workflows/devcontainer.yml)
+Configure single-, double-, and triple-tap behaviors at runtime through a Web UI.
+Place `&rtd <id>` in the ZMK keymap, then edit that named tap dance's actions without
+rebuilding firmware. An ID can be shared by several keys and used on different
+layers. The module uses the unofficial custom Studio protocol in cormoran's ZMK
+fork and persists named entries through `zmk-feature-custom-settings`' shared pool.
 
-This repository contains a template for a ZMK module with Web UI using the **unofficial** custom ZMK Studio RPC protocol.
+Built from [cormoran's custom Studio RPC module template](https://github.com/cormoran/zmk-module-template-with-custom-studio-rpc). <!-- zmk-module-template:keep -->
 
-It's extended from ZMK official template with [zmk-west-commands](https://github.com/cormoran/zmk-west-commands), test code template, coding agent support, and custom Studio RPC protocol support.
+## Install
 
-## Summary
+Add the module and custom Studio ZMK fork to your keyboard's West manifest. Until
+this PR merges, use `codex/runtime-tapdance`; afterwards use `main`.
 
-This template includes:
-
-- **Firmware**: Sample custom Studio RPC handler (`src/studio/template_handler.c`)
-- **Protocol**: Protobuf definition (`proto/your-name/template/template.proto`)
-- **Web UI**: React + TypeScript app (`web/`) using [@cormoran/zmk-studio-react-hook](https://github.com/cormoran/react-zmk-studio)
-- **Tests**: Firmware unit tests (`tests/studio/`) and build tests (`tests/zmk-config/`)
-
-Read through the [ZMK Module Creation](https://zmk.dev/docs/development/module-creation) page for details on how to configure this template.
-
-## More Info
-
-For more info on modules, you can read through through the [Zephyr modules page](https://docs.zephyrproject.org/3.5.0/develop/modules.html) and [ZMK's page on using modules](https://zmk.dev/docs/features/modules). [Zephyr's west manifest page](https://docs.zephyrproject.org/3.5.0/develop/west/manifest.html#west-manifests) may also be of use.
-
-## Module User Guide
-
-1. Add dependency to your `config/west.yml`. Note: this module requires a patched ZMK with custom Studio RPC support.
-
-   ```yml
-   manifest:
-       remotes:
-           ...
-           - name: cormoran
-           url-base: https://github.com/cormoran
-       projects:
-           ...
-           - name: zmk-module-template
-           remote: cormoran
-           revision: main+custom-studio-protocol # or latest commit hash
-           import: true
-           ...
-           # Required: patched ZMK with custom Studio RPC support
-           - name: zmk
-           remote: cormoran
-           revision: main+custom-studio-protocol
-           import:
-               file: app/west.yml
-   ```
-
-2. Enable flags in your `config/<shield>.conf`
-
-   ```conf
-   CONFIG_ZMK_TEMPLATE_FEATURE=y
-
-   # Optionally enable custom Studio RPC
-   CONFIG_ZMK_STUDIO=y
-   CONFIG_ZMK_TEMPLATE_FEATURE_STUDIO_RPC=y
-   CONFIG_ZMK_CUSTOM_SETTINGS=y
-   CONFIG_ZMK_CUSTOM_SETTINGS_STUDIO_RPC=y
-   CONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE=128
-   CONFIG_ZMK_LOW_PRIORITY_THREAD_STACK_SIZE=2048
-   ```
-
-3. Implement your custom protocol by editing:
-   - `proto/your-name/template/template.proto` — message types
-   - `src/studio/template_handler.c` — firmware RPC handler
-   - `web/src/App.tsx` — web UI
-
-### Web UI
-
-See [web/README.md](./web/README.md) for web UI development instructions.
-
-### Publishing Web UI
-
-**GitHub Pages**: Merge a pull request into `main+custom-studio-protocol` to deploy to `https://<account>.github.io/<repo>/`.
-
-**Cloudflare Workers (PR previews)**: Configure `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets. Previews are optional — when the secrets are absent (e.g. a fresh repo created from this template), the workflow stays green and simply comments on the PR explaining how to enable them instead of deploying.
-
-## Module Development Guide
-
-### Initialize from template
-
-Right after creating a repository from this template, run the initialization
-script and follow the checklist in [AGENTS.md](./AGENTS.md):
-
-```bash
-python3 scripts/init_module.py --namespace <your-github-name> --module <feature-name>
+```yaml
+manifest:
+  remotes:
+    - name: cormoran
+      url-base: https://github.com/cormoran
+  projects:
+    - name: zmk-feature-runtime-tapdance
+      remote: cormoran
+      revision: codex/runtime-tapdance
+      import: true
+    - name: zmk
+      remote: cormoran
+      revision: main+custom-studio-protocol
+      import:
+        file: app/west.yml
 ```
 
-It replaces every template placeholder (identifiers, paths, URLs, artifact
-names) and verifies nothing is left (`--verify-only` re-checks at any time).
+Enable the module and Studio in your keyboard's `.conf`:
 
-### Setup for running test
-
-#### Option0: Dev container (recommended)
-
-Open this repository in VS Code with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers). The container automatically initializes the west workspace using the isolated layout.
-
-#### Option1: west workspace directory layout
-
-Set west topdir as parent of repository root and download dependencies under `../`.
-This layout is useful to reduce disk usage by sharing dependencies with other zephyr modules.
-The build result is located in `../build`.
-
-```bash
-mkdir west-workspace
-cd west-workspace # this directory becomes west workspace root (topdir)
-git clone <this repository>
-# rm -r .west # if exists to reset workspace
-west init -l . --mf west/west-test-workspace.yml
-west update --narrow
-west zephyr-export
+```conf
+CONFIG_ZMK_RUNTIME_TAPDANCE=y
+CONFIG_ZMK_STUDIO=y
+CONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y
+CONFIG_ZMK_CUSTOM_SETTINGS_STUDIO_RPC=y
+CONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE=256
+CONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=256
+CONFIG_ZMK_LOW_PRIORITY_THREAD_STACK_SIZE=2048
 ```
 
-#### Option2: isolated directory layout
+Build with `studio-rpc-usb-uart` for USB Web Serial. Include an
+`&studio_unlock` key binding if Studio locking is enabled. On a split keyboard,
+enable this module on the central; the central receives key events from both
+halves. The peripheral does not need it.
 
-Set west topdir as repository root and download dependencies under `./dependencies`.
-This layout is useful if you don't want to share dependencies to other zephyr modules.
-Dev container and github actions uses this layout.
-The build result is located in `./build`.
+Include the behavior definition and assign ID 0 to a key:
 
-```bash
-git clone <this repository>
-cd <cloned directory>
-# Idempotent helper shared with the devcontainer and CI: runs
-# `west init -l west --mf west-test-isolated.yml`, `west update --narrow`,
-# and `west zephyr-export`.
-bash scripts/setup_workspace.sh
+```dts
+#include <behaviors.dtsi>
+#include <behaviors/runtime_tapdance.dtsi>
+
+/ {
+    keymap {
+        compatible = "zmk,keymap";
+        default_layer {
+            bindings = <&rtd 0 &kp B>;
+        };
+    };
+};
 ```
 
-### Pre-commit
+An unallocated ID produces no key action. Create a named tap dance and use the
+ID returned by Studio; the first ID on a fresh device is 0. Only behaviors
+present in the firmware can be selected; `&rtd` itself is rejected as an action
+to prevent recursive dances. `CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES`
+sets the maximum number of simultaneous named entries (default 16). Entries
+allocate and release bytes from `CONFIG_ZMK_RUNTIME_TAPDANCE_POOL_BYTES`
+(default 1024), and names are limited to 24 UTF-8 bytes by default.
+`CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_ACTIVE`
+sets the maximum number of keys that can dance simultaneously (default 16).
 
-Every commit need to pass pre-commit verification. The verification contains formatting code and running tests.
+## Configure from the browser
 
+Run `cd web && npm ci && npm run dev`, then open the displayed URL in Chrome or
+Edge and connect to the keyboard. The firmware also advertises the project's Web
+UI URL. Add a named tap dance, note the ID returned by the firmware, and place
+that ID in `&rtd <id>` in the keymap or through Studio keymap editing. IDs do not
+change on rename or when another tap dance is deleted. Deleted IDs are inert and
+are never reused.
+
+Choose a **single-tap behavior** to activate an entry. Double and triple
+behaviors are optional, but triple requires double. For example, select **Key
+Press** for all three and set parameter 1 to `458756` (`&kp A`), `458757`
+(`&kp B`), and `458758` (`&kp C`); parameter 2 is `0`. The firmware checks
+behavior IDs and parameters against ZMK metadata. Apply writes each binding to
+RAM; Save persists pending edits to flash. Discard restores saved values and
+removes entries created only in RAM. Delete erases an entry immediately from RAM
+and flash. The ID counter is saved on every Create, including RAM-only creates,
+so Discard never reuses an ID. The global
+interval defaults to 200 ms and accepts 1–2000 ms.
+
+Module values also appear in the custom-settings subsystem for import/export.
+Behavior IDs are local to the firmware's behavior map; reuse exports with the
+same mapping.
+
+On the first boot after upgrading from the slot-based version of this PR,
+configured legacy slot `N` is copied to a named entry with the same ID `N` and
+name `Tapdance N`. Existing `&rtd N` bindings continue to refer to it. Empty
+legacy slots are skipped. Once all entries are migrated, the old array setting
+is erased. If the shared pool cannot hold the migration, the old setting is
+retained so migration can be retried after increasing the pool size.
+
+## Recognition rules
+
+The interval runs from each press to the next press. A release must occur
+between taps. A press exactly at the deadline starts a new sequence. The last
+configured tap count resolves immediately: with single and double configured,
+the second press invokes double; with triple configured, double waits for a
+possible third press. Another key press resolves any undecided dances first.
+
+The selected action stays pressed while the final physical tap is held, and
+releases with that tap. A single held key resolves when its interval expires.
+Each active sequence keeps its starting configuration, even if the slot is edited
+while it runs. Sequences are tracked by physical position and split input source,
+so several keys can share one ID. Keymap layers choose where `&rtd` is active.
+
+## Development and tests
+
+See [DESIGN.md](DESIGN.md) for the firmware/API contract and
+[web/README.md](web/README.md) for UI development.
+
+For a standalone checkout, run `bash scripts/setup_workspace.sh` to install the
+complete isolated test manifest. In `zmk-workspace`, use a compatible shared West
+profile and place the Git worktree inside it; do not initialize/update West from
+the worktree. Build results are local to the module worktree.
+
+```sh
+python3 -m unittest -v
+west zmk-build tests/zmk-config -m . -d ./build -q
+west zmk-test tests -m . -d ./build/native-tests
+cd web
+npm ci
+npm run generate
+npm run lint
+npm test -- --runInBand
+VITE_BASE=/ npm run build
+VITE_BASE=/zmk-feature-runtime-tapdance/ npm run build
 ```
-pip install pre-commit
-pre-commit install
 
-# Run pre-commit manually
-pre-commit run --all-files
-# Run for git staged files
-pre-commit run
-```
+Firmware tests assert emitted normal-key and dance-action events. RPC writes
+and validation are exercised through real firmware in Renode; browser E2E tests
+connect the real UI to that firmware. The BLE fixture exercises settings RPC
+while a split peripheral is connected.
 
-### Running Test
-
-```bash
-# Run unit test + build test and verify the results
-python3 -m unittest
-# Run build test directly
-west zmk-build tests/zmk-config
-# Run unit test directly
-west zmk-test tests -m .
-# Run web tests
-cd web && npm test
-```
-
-### Hardware-free Renode testing
-
-CI boots the firmware in the [Renode](https://renode.io/) emulator (a `Build`
-job step) and runs `tests/renode/` -- `renode_test.py` is the file a module
-built from this template rewrites for its own RPC surface. It uses
-`west zmk-renode-test`'s **`wired-split`** mode: a wired split pair whose central
-answers Studio RPC over the emulated **USB CDC** while the wired split link
-forwards key events, covering both the central-only Studio path and the split
-path. The ELFs are the `usb_wired_central` / `usb_wired_peripheral` artifacts in
-`tests/zmk-config/build.yaml`. Locally:
-
-```bash
-west zmk-build tests/zmk-config -af usb_wired_central
-west zmk-build tests/zmk-config -af usb_wired_peripheral
+```sh
 west zmk-renode-test tests/renode --mode wired-split \
-    --elf build/usb_wired_central/zephyr/zmk.elf \
-    --peripheral-elf build/usb_wired_peripheral/zephyr/zmk.elf
-```
-
-The module's own split-relay *sample* (the central forwarding a value to the
-peripheral) is not exercised here -- ZMK's relay-over-wired transport is newer
-than this repo's pinned zmk, so it is covered by the BabbleSim BLE test instead
-(see below). Details (the mode + `ZMK_RENODE_*` env contract): see
-[zmk-west-commands' README, `west zmk-renode-test`](https://github.com/cormoran/zmk-west-commands#west-zmk-renode-test)
-and [docs/renode-testing.md](https://github.com/cormoran/zmk-west-commands/blob/main/docs/renode-testing.md).
-
-### Web UI end-to-end testing
-
-`web/e2e/` runs the **web UI itself**, in a headless browser, against this
-module's **real firmware** in Renode -- no hardware (CI's `Web UI E2E Test`
-workflow). `west zmk-web-e2e` boots the DUT, serves its Studio RPC (over the
-emulated USB CDC) to the browser and hands the test a `navigator.serial` shim,
-so the app, its transport, the RPC framing and the firmware are all real -- only
-the browser's serial driver is faked. `rpc.spec.ts` connects through the app's
-own button and round-trips the module's custom RPC; rewrite its assertions for
-your own requests. Locally:
-
-```bash
-west zmk-build tests/zmk-config -af web_e2e
+  --elf build/usb_wired_central/zephyr/zmk.elf \
+  --peripheral-elf build/usb_wired_peripheral/zephyr/zmk.elf
 west zmk-web-e2e --elf build/web_e2e/zephyr/zmk.elf -- npm --prefix web run e2e
 ```
-
-The DUT (the `web_e2e` artifact) is the real `studio-rpc-usb-uart` image with
-Studio locking off -- an emulator has no key to press `&studio_unlock` with.
-Details (the shim's permission model, the `ZMK_WEB_E2E_*` env contract,
-debugging): see
-[zmk-west-commands' docs/zmk-web-e2e.md](https://github.com/cormoran/zmk-west-commands/blob/main/docs/zmk-web-e2e.md).
-
-### Running BLE (BabbleSim) tests
-
-`tests/ble/` runs real `nrf52_bsim` firmware on a simulated radio (x86 Linux
-only; CI's `ble-test` job). The one case, `studio/custom-rpc-split`, checks --
-in a split central+peripheral topology -- that the custom Studio RPC answers
-over the BLE GATT transport while the split link is active, AND that the
-split-relay sample delivers the RPC value to the peripheral (asserted via the
-peripheral's log line). The Studio host side is one declarative
-`studio_requests.json` -- no host C code in this module. Locally:
-
-```bash
-west zmk-ble-test tests/ble -m .   # --auto-accept regenerates snapshots
-```
-
-Details (case-file conventions, JSON DSL, `{prefix}`/`{studio_host}`,
-BabbleSim setup, peripheral assertion): see
-[zmk-west-commands' README, `west zmk-ble-test`](https://github.com/cormoran/zmk-west-commands#west-zmk-ble-test).
-
-### Sync changes from template
-
-Run `Actions > Sync Changes in Template > Run workflow` to get the latest template changes as a pull request.
-
-If the template contains changes in `.github/workflows/*`, register a GitHub personal access token as `GH_TOKEN` repository secret (`repo` + `workflow` scopes).
-
-### Coding agent on actions
-
-Actions for github copilot and claude are available.
-
-- Mention `@copilot`
-- Setup `ANTHROPIC_API_KEY` secret and mention `@claude`
-  - Or fix [claude.yml](./github/workflows/claude.yml) to use `CLAUDE_CODE_OAUTH_TOKEN`

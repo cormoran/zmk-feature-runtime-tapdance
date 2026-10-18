@@ -23,6 +23,10 @@ from __future__ import annotations
 
 import os
 import sys
+import subprocess
+import socket
+import threading
+from collections import deque
 import time
 import unittest
 from pathlib import Path
@@ -52,7 +56,7 @@ except ImportError:  # pragma: no cover - convenience fallback for local dev
         raise
 
 
-SUBSYSTEM_IDENTIFIER = "your_name__template"
+SUBSYSTEM_IDENTIFIER = "cormoran__runtime_tapdance"
 # This template registers exactly one custom subsystem, so its index is
 # deterministically 0.
 KNOWN_SUBSYSTEM_INDEX = 0
@@ -60,10 +64,6 @@ KNOWN_SUBSYSTEM_INDEX = 0
 # registers -- used to exercise the fast-path dispatch (see
 # test_custom_rpc_invalid_index_dispatch).
 INVALID_SUBSYSTEM_INDEX = 99
-
-SAMPLE_VALUE = 42
-# See handle_sample_request() in src/studio/template_handler.c.
-EXPECTED_SAMPLE_RESPONSE = f"Hello from firmware! Received: {SAMPLE_VALUE}"
 
 # attach_dual_cdc_bridge's default bridge name -> monitor object prefix.
 BRIDGE_NAME = "bridge"
@@ -112,7 +112,7 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         cls.peripheral_elf = Path(peripheral_env)
         for elf in (cls.central_elf, cls.peripheral_elf):
             if not elf.is_file():
-                raise unittest.SkipTest(f"ELF does not exist: {elf}")
+                raise AssertionError(f"Configured ELF does not exist: {elf}")
 
         storage_addr = int(
             os.environ.get("ZMK_RENODE_STORAGE_ADDR")
@@ -127,17 +127,32 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
 
         # Core zmk.studio.* messages (Request/Response envelope, core.proto,
         # custom.proto for the generic custom-subsystem envelope).
-        studio_proto_dir = renode_harness.find_studio_proto_dir(REPO_ROOT)
+        # The module may be a shared-profile worktree rather than the West root.
+        try:
+            messages = subprocess.check_output(
+                ["west", "list", "zmk-studio-messages", "-f", "{abspath}"],
+                cwd=REPO_ROOT,
+                text=True,
+            ).strip()
+            studio_proto_dir = Path(messages) / "proto" / "zmk"
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            studio_proto_dir = renode_harness.find_studio_proto_dir(REPO_ROOT)
         cls.studio_pb2 = renode_harness.load_studio_pb2(studio_proto_dir)
 
-        # This module's own proto (package your_name.template) -- protoc
-        # normalizes the hyphenated "your-name" path to the "your_name" package.
+        # This module's own proto (package cormoran.runtime_tapdance) -- protoc
+        # normalizes the hyphenated "runtime-tapdance" path to the "runtime_tapdance" package.
         out_dir = renode_harness.compile_protos(
-            [REPO_ROOT / "proto" / "your-name" / "template" / "template.proto"],
+            [
+                REPO_ROOT
+                / "proto"
+                / "cormoran"
+                / "runtime-tapdance"
+                / "runtime_tapdance.proto"
+            ],
             include_dirs=[REPO_ROOT / "proto"],
         )
         sys.path.insert(0, str(out_dir))
-        import your_name.template.template_pb2 as template_pb2  # type: ignore
+        import cormoran.runtime_tapdance.runtime_tapdance_pb2 as template_pb2  # type: ignore
 
         cls.template_pb2 = template_pb2
 
@@ -172,9 +187,32 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
 
         # Let the guest finish USB bring-up before the host attaches (a SETUP
         # fired before the guest's INTEN is set is silently lost).
-        settle_deadline = time.monotonic() + 8.0
-        while time.monotonic() < settle_deadline:
-            renode_harness.drain_text(cls.central_console._sock, timeout=0.5)
+        # Unread UART logs can backpressure Renode's terminal and stall the
+        # firmware logger. Keep every non-Studio socket draining during RPC.
+        cls.console_log = deque(maxlen=3000)
+        cls.peripheral_log = deque(maxlen=3000)
+
+        def drain_console(stream, captured):
+            stream.settimeout(0.5)
+            while True:
+                try:
+                    chunk = stream.recv(4096)
+                    if not chunk:
+                        return
+                    captured.append(chunk.decode(errors="replace"))
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+
+        for stream, captured in (
+            (cls.central_console._sock, cls.console_log),
+            (cls.peripheral_console._sock, cls.peripheral_log),
+        ):
+            threading.Thread(
+                target=drain_console, args=(stream, captured), daemon=True
+            ).start()
+        time.sleep(8.0)
 
         cdc0, cdc1 = renode_harness.attach_dual_cdc_bridge(
             cls.session, cls.port_base + 4, cls.port_base + 5
@@ -208,7 +246,12 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
 
     def _read_response(self, timeout: float = 10.0):
         resp_bytes = self.studio.read_frame(timeout=timeout)
-        self.assertIsNotNone(resp_bytes, "no Studio RPC response frame (timeout)")
+        if resp_bytes is None:
+            console = "".join(self.console_log)
+            pc = self.session.mon.execute("sysbus.cpu PC", settle=0.2)
+            self.fail(
+                f"no Studio RPC response frame (timeout); CPU={pc}; console:\n{console}"
+            )
         resp = self.studio_pb2.Response()
         resp.ParseFromString(resp_bytes)
         return resp
@@ -234,35 +277,217 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
 
     # -- The real thing: this module's own custom RPC, over USB --------------
 
-    def test_custom_rpc_sample_round_trip_over_usb(self):
-        """Send this module's own SampleRequest to its registered subsystem
-        (index 0) and assert the SampleResponse comes back over the central's
-        USB CDC."""
-        inner_req = self.template_pb2.Request()
-        inner_req.sample.value = SAMPLE_VALUE
-        self._send_call(KNOWN_SUBSYSTEM_INDEX, inner_req.SerializeToString(), request_id=1)
+    def _module_call(self, request, request_id=10):
+        self._send_call(KNOWN_SUBSYSTEM_INDEX, request.SerializeToString(), request_id)
+        envelope = self._read_response()
+        self.assertEqual(envelope.request_response.request_id, request_id)
+        self.assertEqual(envelope.request_response.WhichOneof("subsystem"), "custom")
+        result = self.template_pb2.Response()
+        result.ParseFromString(envelope.request_response.custom.call.payload)
+        return result
 
-        resp = self._read_response()
-        self.assertEqual(resp.WhichOneof("type"), "request_response")
-        self.assertEqual(resp.request_response.request_id, 1)
-        self.assertEqual(resp.request_response.WhichOneof("subsystem"), "custom")
+    def _key_press_id(self):
+        request = self.studio_pb2.Request()
+        request.request_id = 20
+        request.behaviors.list_all_behaviors = True
+        self.studio.send(request.SerializeToString())
+        listing = self._read_response().request_response.behaviors.list_all_behaviors
+        for behavior_id in listing.behaviors:
+            request = self.studio_pb2.Request()
+            request.request_id = 21
+            request.behaviors.get_behavior_details.behavior_id = behavior_id
+            self.studio.send(request.SerializeToString())
+            details = (
+                self._read_response().request_response.behaviors.get_behavior_details
+            )
+            if details.display_name == "Key Press":
+                return behavior_id
+        self.fail("Key Press behavior not advertised by Studio")
 
-        # zmk.custom.Response -> CallResponse{subsystem_index, payload}.
-        custom_resp = resp.request_response.custom
-        self.assertEqual(custom_resp.WhichOneof("response_type"), "call")
-        self.assertEqual(custom_resp.call.subsystem_index, KNOWN_SUBSYSTEM_INDEX)
+    def test_runtime_configuration_crud_over_usb(self):
+        """Create named entries, edit one binding, and exercise Save/Discard."""
+        proto = self.template_pb2
+        global_state = getattr(
+            self._module_call(proto.Request(get_global=proto.GetGlobalRequest())),
+            "global",
+        )
+        self.assertEqual(global_state.api_version, 2)
+        self.assertEqual(global_state.max_entries, 16)
+        self.assertEqual(global_state.used_entries, 0)
+        self.assertGreater(global_state.pool_bytes_total, 0)
+        self.assertEqual(global_state.pool_bytes_used, 0)
+        initial_list = self._module_call(proto.Request(list=proto.ListRequest())).list
+        self.assertEqual(len(initial_list.entries), 0)
+        created = self._module_call(
+            proto.Request(create=proto.CreateRequest(name="Alpha"))
+        )
+        self.assertEqual(created.WhichOneof("response_type"), "state")
+        self.assertEqual(created.state.index, 0)
+        self.assertEqual(created.state.name, "Alpha")
+        self.assertTrue(created.state.has_unsaved_changes)
+        self.assertTrue(created.state.HasField("config"))
+        self.assertTrue(created.state.config.HasField("single_binding"))
 
-        inner_resp = self.template_pb2.Response()
-        inner_resp.ParseFromString(custom_resp.call.payload)
-        self.assertEqual(inner_resp.WhichOneof("response_type"), "sample")
-        self.assertEqual(inner_resp.sample.value, EXPECTED_SAMPLE_RESPONSE)
+        interval = self._module_call(
+            proto.Request(
+                set_interval=proto.SetIntervalRequest(interval_ms=250, persist=True)
+            )
+        )
+        self.assertEqual(getattr(interval, "global").interval_ms, 250)
+        key_press = self._key_press_id()
+        bindings = [
+            proto.Binding(behavior_id=key_press, param1=458756 + tap)
+            for tap in range(3)
+        ]
+        for tap_count, binding in enumerate(bindings, start=1):
+            written = self._module_call(
+                proto.Request(
+                    set=proto.SetRequest(
+                        index=0, tap_count=tap_count, binding=binding, persist=True
+                    )
+                )
+            )
+            self.assertEqual(written.WhichOneof("response_type"), "state")
+        config = proto.Config(
+            single_binding=bindings[0],
+            double_binding=bindings[1],
+            triple_binding=bindings[2],
+        )
+        reread = self._module_call(proto.Request(get=proto.GetRequest(index=0)))
+        self.assertEqual(reread.state.config, config)
+        self.assertEqual(reread.state.interval_ms, 250)
+        renamed = self._module_call(
+            proto.Request(rename=proto.RenameRequest(index=0, name="Renamed"))
+        )
+        self.assertEqual(renamed.state.index, 0)
+        self.assertEqual(renamed.state.name, "Renamed")
+        changed_double = proto.Binding(behavior_id=key_press, param1=458760)
+        ram_only = self._module_call(
+            proto.Request(
+                set=proto.SetRequest(index=0, tap_count=2, binding=changed_double)
+            )
+        )
+        self.assertEqual(ram_only.state.config.single_binding, bindings[0])
+        self.assertEqual(ram_only.state.config.double_binding, changed_double)
+        self.assertEqual(ram_only.state.config.triple_binding, bindings[2])
+        interval_ram_only = self._module_call(
+            proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=300))
+        )
+        self.assertEqual(getattr(interval_ram_only, "global").interval_ms, 300)
+        reread_ram_only = self._module_call(
+            proto.Request(get=proto.GetRequest(index=0))
+        )
+        self.assertEqual(reread_ram_only.state.config.double_binding, changed_double)
+        self.assertEqual(reread_ram_only.state.interval_ms, 300)
+        saved = self._module_call(proto.Request(save=proto.SaveRequest()))
+        self.assertEqual(saved.WhichOneof("response_type"), "status")
+        self.assertGreater(saved.status.affected_count, 0)
 
-    # The module's split-relay sample (central forwarding the value to the
-    # peripheral) is covered by the BabbleSim BLE test, not here: relay-over-wired
-    # needs a newer zmk than the pin. To add once it advances: build the
-    # peripheral with the module + CONFIG_ZMK_SPLIT_RELAY_EVENT and assert its
-    # "Peripheral received relayed sample value: 42 (v1)" log on
-    # self.peripheral_console.
+        self._module_call(
+            proto.Request(
+                set=proto.SetRequest(index=0, tap_count=2, binding=bindings[1])
+            )
+        )
+        temporary = self._module_call(
+            proto.Request(create=proto.CreateRequest(name="Temporary"))
+        )
+        self.assertEqual(temporary.state.index, 1)
+        discarded = self._module_call(proto.Request(discard=proto.DiscardRequest()))
+        self.assertEqual(discarded.WhichOneof("response_type"), "status")
+        self.assertEqual(
+            self._module_call(
+                proto.Request(get=proto.GetRequest(index=0))
+            ).state.config.double_binding,
+            changed_double,
+        )
+        self.assertEqual(
+            self._module_call(proto.Request(get=proto.GetRequest(index=1))).WhichOneof(
+                "response_type"
+            ),
+            "error",
+        )
+
+        second = self._module_call(
+            proto.Request(create=proto.CreateRequest(name="Beta"))
+        )
+        self.assertEqual(second.state.index, 2)
+        listed = self._module_call(proto.Request(list=proto.ListRequest())).list
+        self.assertEqual([item.index for item in listed.entries], [0, 2])
+        self.assertEqual([item.name for item in listed.entries], ["Renamed", "Beta"])
+        removed = self._module_call(proto.Request(delete=proto.DeleteRequest(index=0)))
+        self.assertEqual(removed.status.affected_count, 1)
+        self.assertEqual(
+            self._module_call(proto.Request(get=proto.GetRequest(index=0))).WhichOneof(
+                "response_type"
+            ),
+            "error",
+        )
+        self._module_call(proto.Request(delete=proto.DeleteRequest(index=2)))
+        self._module_call(
+            proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=200))
+        )
+
+    def test_runtime_rpc_invalid_requests(self):
+        proto = self.template_pb2
+        bad_requests = [
+            proto.Request(),
+            proto.Request(get=proto.GetRequest(index=16)),
+            proto.Request(set=proto.SetRequest(index=0, tap_count=1)),
+            proto.Request(
+                set=proto.SetRequest(index=0, tap_count=0, binding=proto.Binding())
+            ),
+            proto.Request(
+                set=proto.SetRequest(
+                    index=0, tap_count=2, binding=proto.Binding(behavior_id=1)
+                )
+            ),
+            proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=0)),
+            proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=2001)),
+            proto.Request(
+                set=proto.SetRequest(
+                    index=0,
+                    tap_count=1,
+                    binding=proto.Binding(behavior_id=0xFFFFFFFF),
+                )
+            ),
+        ]
+        for request in bad_requests:
+            with self.subTest(request=request):
+                result = self._module_call(request)
+                self.assertEqual(result.WhichOneof("response_type"), "error")
+                self.assertLess(result.error.code, 0)
+                self.assertTrue(result.error.message)
+
+    def test_runtime_paged_list(self):
+        proto = self.template_pb2
+        ids = []
+        for number in range(6):
+            result = self._module_call(
+                proto.Request(create=proto.CreateRequest(name=f"Paged {number}"))
+            )
+            self.assertEqual(result.WhichOneof("response_type"), "state")
+            ids.append(result.state.index)
+        first = self._module_call(proto.Request(list=proto.ListRequest())).list
+        self.assertEqual([item.index for item in first.entries], ids[:4])
+        self.assertTrue(first.has_more)
+        second = self._module_call(
+            proto.Request(
+                list=proto.ListRequest(has_after_id=True, after_id=first.next_after_id)
+            )
+        ).list
+        self.assertEqual([item.index for item in second.entries], ids[4:])
+        self.assertFalse(second.has_more)
+        duplicate = self._module_call(
+            proto.Request(create=proto.CreateRequest(name="Paged 0"))
+        )
+        self.assertEqual(duplicate.error.code, -17)
+        for entry_id in ids:
+            self.assertEqual(
+                self._module_call(
+                    proto.Request(delete=proto.DeleteRequest(index=entry_id))
+                ).status.affected_count,
+                1,
+            )
 
 
 if __name__ == "__main__":
