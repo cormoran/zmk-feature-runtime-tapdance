@@ -17,10 +17,13 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #define COUNT CONFIG_ZMK_RUNTIME_TAPDANCE_MAX_TAPDANCES
-#define PACKED_SIZE (2 + CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN + 36)
+#define PACKED_SIZE (4 + CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN + 72 + 8)
 #define KEY_SIZE (sizeof(ZMK_RUNTIME_TAPDANCE_KEY_PREFIX) + 10)
 #define LEGACY_PACKED_SIZE 37
-BUILD_ASSERT(PACKED_SIZE <= CONFIG_ZMK_CUSTOM_SETTINGS_VALUE_MAX_SIZE);
+BUILD_ASSERT(4 + CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN <=
+             CONFIG_ZMK_CUSTOM_SETTINGS_VALUE_MAX_SIZE);
+BUILD_ASSERT(PACKED_SIZE <= CONFIG_ZMK_CUSTOM_SETTINGS_LARGE_VALUE_MAX_SIZE,
+             "Set CONFIG_ZMK_CUSTOM_SETTINGS_LARGE_VALUE_MAX_SIZE to at least 108");
 /* Keep the old array registered for one-way migration of pre-pool settings. */
 #define LEGACY_SLOT_DEFAULT(i, _) {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES, .size = 0}
 static const struct zmk_custom_setting_value legacy_defaults[COUNT] = {
@@ -86,12 +89,49 @@ static int validate(const struct zmk_runtime_tapdance_config *config) {
     if (ret < 0) {
         return ret;
     }
+    for (size_t i = 0; i < 3; i++) {
+        ret = binding_from_value(&config->hold_bindings[i], &binding);
+        if (ret < 0) {
+            return ret;
+        }
+    }
     if ((!config->single_binding.behavior_id &&
          (config->double_binding.behavior_id || config->triple_binding.behavior_id)) ||
         (config->triple_binding.behavior_id && !config->double_binding.behavior_id)) {
         return -EINVAL;
     }
+    const bool taps[3] = {config->single_binding.behavior_id, config->double_binding.behavior_id,
+                          config->triple_binding.behavior_id};
+    if (config->interval_ms > 2000) {
+        return -EINVAL;
+    }
+    for (size_t i = 0; i < 3; i++) {
+        if ((!taps[i] && (config->hold_bindings[i].behavior_id || config->tap_intervals_ms[i])) ||
+            config->tap_intervals_ms[i] > 2000) {
+            return -EINVAL;
+        }
+    }
     return 0;
+}
+
+static struct zmk_custom_setting_behavior_value *
+tap_binding(struct zmk_runtime_tapdance_config *config, size_t index) {
+    return index == 0   ? &config->single_binding
+           : index == 1 ? &config->double_binding
+                        : &config->triple_binding;
+}
+
+static void read_packed_binding(const uint8_t *p,
+                                struct zmk_custom_setting_behavior_value *binding) {
+    *binding = (struct zmk_custom_setting_behavior_value){sys_get_le32(p), sys_get_le32(p + 4),
+                                                          sys_get_le32(p + 8)};
+}
+
+static void write_packed_binding(uint8_t *p,
+                                 const struct zmk_custom_setting_behavior_value *binding) {
+    sys_put_le32(binding->behavior_id, p);
+    sys_put_le32(binding->param1, p + 4);
+    sys_put_le32(binding->param2, p + 8);
 }
 
 static int make_key(uint32_t index, char key[KEY_SIZE]) {
@@ -118,8 +158,9 @@ static int decode_entry(const struct zmk_custom_setting *entry,
     if (ret < 0) {
         return ret;
     }
-    if (size < 38 || packed[0] != 4 || packed[1] == 0 ||
-        packed[1] > CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN || size != (size_t)packed[1] + 38) {
+    if (size < 4 || (packed[0] != 4 && packed[0] != 5) || packed[1] == 0 ||
+        packed[1] > CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN ||
+        (packed[0] == 4 && size != (size_t)packed[1] + 38)) {
         return -EINVAL;
     }
     if (name) {
@@ -130,40 +171,97 @@ static int decode_entry(const struct zmk_custom_setting *entry,
         name[packed[1]] = '\0';
     }
     if (config) {
+        memset(config, 0, sizeof(*config));
         const uint8_t *p = packed + 2 + packed[1];
-        config->single_binding = (struct zmk_custom_setting_behavior_value){
-            sys_get_le32(p), sys_get_le32(p + 4), sys_get_le32(p + 8)};
-        config->double_binding = (struct zmk_custom_setting_behavior_value){
-            sys_get_le32(p + 12), sys_get_le32(p + 16), sys_get_le32(p + 20)};
-        config->triple_binding = (struct zmk_custom_setting_behavior_value){
-            sys_get_le32(p + 24), sys_get_le32(p + 28), sys_get_le32(p + 32)};
+        if (packed[0] == 4) {
+            for (size_t i = 0; i < 3; i++) {
+                read_packed_binding(p + i * 12, tap_binding(config, i));
+            }
+        } else {
+            if (size < (size_t)packed[1] + 4) {
+                return -EINVAL;
+            }
+            uint16_t mask = sys_get_le16(p);
+            if (mask & ~0x3ff) {
+                return -EINVAL;
+            }
+            p += 2;
+            size_t remaining = size - packed[1] - 4;
+            for (size_t i = 0; i < 6; i++) {
+                if (!(mask & BIT(i))) {
+                    continue;
+                }
+                if (remaining < 12) {
+                    return -EINVAL;
+                }
+                read_packed_binding(p,
+                                    i < 3 ? tap_binding(config, i) : &config->hold_bindings[i - 3]);
+                p += 12;
+                remaining -= 12;
+            }
+            for (size_t i = 6; i < 10; i++) {
+                if (!(mask & BIT(i))) {
+                    continue;
+                }
+                if (remaining < 2) {
+                    return -EINVAL;
+                }
+                uint16_t interval = sys_get_le16(p);
+                if (i == 6)
+                    config->interval_ms = interval;
+                else
+                    config->tap_intervals_ms[i - 7] = interval;
+                p += 2;
+                remaining -= 2;
+            }
+            if (remaining) {
+                return -EINVAL;
+            }
+        }
         return validate(config);
+    }
+    if (packed[0] == 5) {
+        struct zmk_runtime_tapdance_config checked;
+        return decode_entry(entry, &checked, NULL, 0);
     }
     return 0;
 }
 
 static int encode_entry(const char *name, const struct zmk_runtime_tapdance_config *config,
-                        struct zmk_custom_setting_value *value) {
+                        uint8_t value[PACKED_SIZE], size_t *size) {
     size_t name_len = strlen(name);
     if (name_len == 0 || name_len > CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN) {
         return -EMSGSIZE;
     }
-    *value = (struct zmk_custom_setting_value){.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES,
-                                               .size = 38 + name_len};
-    uint8_t *p = value->bytes_value;
-    p[0] = 4;
+    uint8_t *p = value;
+    p[0] = 5;
     p[1] = name_len;
     memcpy(p + 2, name, name_len);
     p += 2 + name_len;
-    sys_put_le32(config->single_binding.behavior_id, p);
-    sys_put_le32(config->single_binding.param1, p + 4);
-    sys_put_le32(config->single_binding.param2, p + 8);
-    sys_put_le32(config->double_binding.behavior_id, p + 12);
-    sys_put_le32(config->double_binding.param1, p + 16);
-    sys_put_le32(config->double_binding.param2, p + 20);
-    sys_put_le32(config->triple_binding.behavior_id, p + 24);
-    sys_put_le32(config->triple_binding.param1, p + 28);
-    sys_put_le32(config->triple_binding.param2, p + 32);
+    uint8_t *mask_at = p;
+    p += 2;
+    uint16_t mask = 0;
+    for (size_t i = 0; i < 6; i++) {
+        const struct zmk_custom_setting_behavior_value *binding =
+            i < 3 ? tap_binding((struct zmk_runtime_tapdance_config *)config, i)
+                  : &config->hold_bindings[i - 3];
+        if (binding->behavior_id) {
+            mask |= BIT(i);
+            write_packed_binding(p, binding);
+            p += 12;
+        }
+    }
+    const uint16_t intervals[4] = {config->interval_ms, config->tap_intervals_ms[0],
+                                   config->tap_intervals_ms[1], config->tap_intervals_ms[2]};
+    for (size_t i = 0; i < 4; i++) {
+        if (intervals[i]) {
+            mask |= BIT(i + 6);
+            sys_put_le16(intervals[i], p);
+            p += 2;
+        }
+    }
+    sys_put_le16(mask, mask_at);
+    *size = p - value;
     return 0;
 }
 
@@ -190,14 +288,15 @@ static int write_raw_locked(uint32_t index, const struct zmk_runtime_tapdance_co
     if (ret < 0) {
         return ret;
     }
-    struct zmk_custom_setting_value value;
-    ret = encode_entry(name, config, &value);
+    uint8_t value[PACKED_SIZE];
+    size_t size;
+    ret = encode_entry(name, config, value, &size);
     if (ret < 0) {
         return ret;
     }
-    return zmk_custom_setting_write(entry, &value,
-                                    persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST
-                                            : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    return zmk_custom_setting_write_bytes(entry, value, size,
+                                          persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST
+                                                  : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
 }
 
 int zmk_runtime_tapdance_write(uint32_t index, const struct zmk_runtime_tapdance_config *config,
@@ -215,9 +314,9 @@ int zmk_runtime_tapdance_write(uint32_t index, const struct zmk_runtime_tapdance
     return ret;
 }
 
-int zmk_runtime_tapdance_set_binding(uint32_t index, uint32_t tap_count,
-                                     const struct zmk_custom_setting_behavior_value *binding,
-                                     bool persist) {
+static int set_binding(uint32_t index, uint32_t tap_count,
+                       const struct zmk_custom_setting_behavior_value *binding, bool hold,
+                       bool persist) {
     if (!binding || tap_count < 1 || tap_count > 3) {
         return -EINVAL;
     }
@@ -225,11 +324,42 @@ int zmk_runtime_tapdance_set_binding(uint32_t index, uint32_t tap_count,
     struct zmk_runtime_tapdance_config config;
     int ret = read_raw(index, &config);
     if (ret == 0) {
-        struct zmk_custom_setting_behavior_value *selected = tap_count == 1 ? &config.single_binding
-                                                             : tap_count == 2
-                                                                 ? &config.double_binding
-                                                                 : &config.triple_binding;
+        struct zmk_custom_setting_behavior_value *selected =
+            hold ? &config.hold_bindings[tap_count - 1] : tap_binding(&config, tap_count - 1);
         *selected = *binding;
+        ret = validate(&config);
+        if (ret == 0) {
+            ret = write_raw_locked(index, &config, persist);
+        }
+    }
+    k_mutex_unlock(&tapdance_lock);
+    return ret;
+}
+
+int zmk_runtime_tapdance_set_binding(uint32_t index, uint32_t tap_count,
+                                     const struct zmk_custom_setting_behavior_value *binding,
+                                     bool persist) {
+    return set_binding(index, tap_count, binding, false, persist);
+}
+
+int zmk_runtime_tapdance_set_hold_binding(uint32_t index, uint32_t tap_count,
+                                          const struct zmk_custom_setting_behavior_value *binding,
+                                          bool persist) {
+    return set_binding(index, tap_count, binding, true, persist);
+}
+
+int zmk_runtime_tapdance_set_interval(uint32_t index, uint32_t tap_count, uint32_t interval_ms,
+                                      bool persist) {
+    if (tap_count > 3 || interval_ms > 2000) {
+        return -EINVAL;
+    }
+    k_mutex_lock(&tapdance_lock, K_FOREVER);
+    struct zmk_runtime_tapdance_config config;
+    int ret = read_raw(index, &config);
+    if (ret == 0) {
+        uint16_t *selected =
+            tap_count ? &config.tap_intervals_ms[tap_count - 1] : &config.interval_ms;
+        *selected = interval_ms;
         ret = validate(&config);
         if (ret == 0) {
             ret = write_raw_locked(index, &config, persist);
@@ -327,7 +457,14 @@ int zmk_runtime_tapdance_create(const char *name, bool persist, uint32_t *index)
     if (ret == 0) {
         struct zmk_custom_setting_value value;
         const struct zmk_runtime_tapdance_config empty = {0};
-        ret = encode_entry(name, &empty, &value);
+        uint8_t packed[PACKED_SIZE];
+        size_t size;
+        ret = encode_entry(name, &empty, packed, &size);
+        if (ret == 0) {
+            value = (struct zmk_custom_setting_value){.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES,
+                                                      .size = size};
+            memcpy(value.bytes_value, packed, size);
+        }
         if (ret == 0) {
             /* Persist the high-water mark even for RAM-only entries so a stale
              * keymap reference can never attach to a later entry. */
@@ -364,15 +501,16 @@ int zmk_runtime_tapdance_rename(uint32_t index, const char *name, bool persist) 
     int ret = !entry ? -ENOENT : name_exists_locked(name, index) ? -EEXIST : 0;
     if (ret == 0) {
         struct zmk_runtime_tapdance_config config;
-        struct zmk_custom_setting_value value;
+        uint8_t value[PACKED_SIZE];
+        size_t size;
         ret = decode_entry(entry, &config, NULL, 0);
         if (ret == 0) {
-            ret = encode_entry(name, &config, &value);
+            ret = encode_entry(name, &config, value, &size);
         }
         if (ret == 0) {
-            ret = zmk_custom_setting_write(entry, &value,
-                                           persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST
-                                                   : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+            ret = zmk_custom_setting_write_bytes(entry, value, size,
+                                                 persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST
+                                                         : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
         }
     }
     k_mutex_unlock(&tapdance_lock);
@@ -534,13 +672,31 @@ static int migrate_legacy_config(uint32_t index, const struct zmk_runtime_tapdan
         return ret;
     }
     snprintf(name, sizeof(name), "Tapdance %u", index);
-    struct zmk_custom_setting_value value;
-    ret = encode_entry(name, config, &value);
+    const struct zmk_runtime_tapdance_config empty = {0};
+    uint8_t packed[PACKED_SIZE];
+    size_t size;
+    ret = encode_entry(name, &empty, packed, &size);
     if (ret < 0) {
         return ret;
     }
-    return zmk_custom_setting_keyspace_create(&runtime_tapdances, key, &value,
-                                              ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST, NULL);
+    struct zmk_custom_setting_value value = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES,
+                                             .size = size};
+    memcpy(value.bytes_value, packed, size);
+    const struct zmk_custom_setting *entry;
+    ret = zmk_custom_setting_keyspace_create(&runtime_tapdances, key, &value,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY, &entry);
+    if (ret < 0) {
+        return ret;
+    }
+    ret = encode_entry(name, config, packed, &size);
+    if (ret == 0) {
+        ret = zmk_custom_setting_write_bytes(entry, packed, size,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST);
+    }
+    if (ret < 0) {
+        zmk_custom_setting_keyspace_delete(&runtime_tapdances, key);
+    }
+    return ret;
 }
 
 static int legacy_initialized(const zmk_event_t *event) {
@@ -698,12 +854,12 @@ static int invoke(struct sequence *seq, bool pressed, int64_t timestamp) {
     return zmk_behavior_invoke_binding(&binding, event, pressed);
 }
 
-static void finish(struct sequence *seq, int64_t timestamp) {
+static void finish(struct sequence *seq, int64_t timestamp, bool held) {
     seq->decided = true;
     seq->deadline = INT64_MAX;
-    seq->action = seq->taps == 3   ? seq->config.triple_binding
-                  : seq->taps == 2 ? seq->config.double_binding
-                                   : seq->config.single_binding;
+    seq->action = held && seq->config.hold_bindings[seq->taps - 1].behavior_id
+                      ? seq->config.hold_bindings[seq->taps - 1]
+                      : *tap_binding(&seq->config, seq->taps - 1);
     int ret = invoke(seq, true, timestamp);
     if (ret < 0) {
         LOG_WRN("Runtime tap dance action rejected: %d", ret);
@@ -721,7 +877,7 @@ static void expire(int64_t timestamp) {
     for (size_t i = 0; i < ARRAY_SIZE(sequences); i++) {
         struct sequence *seq = &sequences[i];
         if (seq->active && !seq->decided && seq->deadline <= timestamp) {
-            finish(seq, seq->deadline);
+            finish(seq, seq->deadline, seq->pressed);
         }
     }
 }
@@ -745,6 +901,13 @@ static void release(struct sequence *seq, int64_t timestamp) {
         return;
     }
     seq->pressed = false;
+    uint8_t max_taps = seq->config.triple_binding.behavior_id   ? 3
+                       : seq->config.double_binding.behavior_id ? 2
+                                                                : 1;
+    if (!seq->decided && seq->taps == max_taps) {
+        finish(seq, timestamp, false);
+        return;
+    }
     if (seq->decided) {
         if (seq->action_pressed) {
             invoke(seq, false, timestamp);
@@ -764,7 +927,7 @@ int zmk_runtime_tapdance_pressed(uint32_t slot, struct zmk_behavior_binding_even
     struct sequence *seq = find_key(event.position, source);
     if (seq && seq->slot != slot) {
         if (!seq->decided) {
-            finish(seq, event.timestamp);
+            finish(seq, event.timestamp, seq->pressed);
         }
         if (seq->action_pressed && seq->active) {
             invoke(seq, false, event.timestamp);
@@ -796,12 +959,15 @@ int zmk_runtime_tapdance_pressed(uint32_t slot, struct zmk_behavior_binding_even
     if (!seq->pressed && !seq->decided) {
         seq->pressed = true;
         seq->taps++;
-        seq->deadline = event.timestamp + seq->interval;
+        uint16_t interval = seq->config.tap_intervals_ms[seq->taps - 1];
+        if (!interval)
+            interval = seq->config.interval_ms;
+        seq->deadline = event.timestamp + (interval ? interval : seq->interval);
         uint8_t max_taps = seq->config.triple_binding.behavior_id   ? 3
                            : seq->config.double_binding.behavior_id ? 2
                                                                     : 1;
-        if (seq->taps == max_taps) {
-            finish(seq, event.timestamp);
+        if (seq->taps == max_taps && !seq->config.hold_bindings[seq->taps - 1].behavior_id) {
+            finish(seq, event.timestamp, false);
         }
     }
 out:
@@ -841,7 +1007,7 @@ static int listener(const zmk_event_t *eh) {
         for (size_t i = 0; i < ARRAY_SIZE(sequences); i++) {
             struct sequence *seq = &sequences[i];
             if (seq->active && !seq->decided && !same_key(seq, ev->position, ev->source)) {
-                finish(seq, ev->timestamp);
+                finish(seq, ev->timestamp, seq->pressed);
             }
         }
     } else {

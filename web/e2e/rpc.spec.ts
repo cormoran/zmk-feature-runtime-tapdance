@@ -41,6 +41,12 @@ test("configures and removes tap dances through real firmware", async ({
     .getByLabel("Triple 0 behavior", { exact: true })
     .selectOption(keyPressId!);
   await page.getByLabel("Triple 0 parameter 1").fill("458757");
+  await page
+    .getByLabel("Single 0 hold behavior", { exact: true })
+    .selectOption(keyPressId!);
+  await page.getByLabel("Single 0 hold parameter 1").fill("458758");
+  await page.getByLabel("Tap dance 0 default interval (ms)").fill("300");
+  await page.getByLabel("Single 0 interval (ms)").fill("125");
   await page.getByRole("button", { name: "Apply tap dance 0" }).click();
   await page.getByRole("button", { name: "Save all" }).click();
   await expect(page.getByText("Saved to flash.")).toBeVisible();
@@ -54,6 +60,13 @@ test("configures and removes tap dances through real firmware", async ({
   ).toHaveValue(keyPressId!);
   await expect(page.getByLabel("Double 0 parameter 1")).toHaveValue("458756");
   await expect(page.getByLabel("Triple 0 parameter 1")).toHaveValue("458757");
+  await expect(page.getByLabel("Single 0 hold parameter 1")).toHaveValue(
+    "458758"
+  );
+  await expect(
+    page.getByLabel("Tap dance 0 default interval (ms)")
+  ).toHaveValue("300");
+  await expect(page.getByLabel("Single 0 interval (ms)")).toHaveValue("125");
   await expect(page.getByLabel("Tap interval (ms)")).toHaveValue("250");
   await page.getByRole("button", { name: "Delete tap dance 0" }).click();
   await expect(page.getByText("0 / 16 tap dances")).toBeVisible();

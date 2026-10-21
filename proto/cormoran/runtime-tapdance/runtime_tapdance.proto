@@ -10,12 +10,28 @@ message Config {
     Binding single_binding = 2;
     Binding double_binding = 4;
     Binding triple_binding = 5;
+    Binding single_hold_binding = 6;
+    Binding double_hold_binding = 7;
+    Binding triple_hold_binding = 8;
+    uint32 dance_interval_ms = 9;
+    uint32 single_interval_ms = 10;
+    uint32 double_interval_ms = 11;
+    uint32 triple_interval_ms = 12;
 }
 message GetRequest { uint32 index = 1; }
 message SetRequest {
     uint32 index = 1;
     uint32 tap_count = 2;
     Binding binding = 3;
+    bool persist = 4;
+    bool hold = 5;
+}
+// tap_count=0 changes the dance default; 1..3 changes a tap override.
+// interval_ms=0 clears the override and uses the next fallback.
+message SetTimingRequest {
+    uint32 index = 1;
+    uint32 tap_count = 2;
+    uint32 interval_ms = 3;
     bool persist = 4;
 }
 message RemoveRequest {
@@ -58,6 +74,7 @@ message Request {
         GetGlobalRequest get_global = 9;
         SaveRequest save = 10;
         DiscardRequest discard = 11;
+        SetTimingRequest set_timing = 12;
     }
 }
 message State {

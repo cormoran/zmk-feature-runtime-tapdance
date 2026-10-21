@@ -121,6 +121,15 @@ static void verify_timer(struct k_work *work) {
     memset(long_name, 'x', CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN);
     long_name[CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN] = '\0';
     uint32_t first_long_id = 0, long_count = 0;
+    const uint32_t kp = zmk_behavior_get_local_id("key_press");
+    struct zmk_runtime_tapdance_config full = {
+        .single_binding = {kp, A, 0},
+        .double_binding = {kp, B, 0},
+        .triple_binding = {kp, C, 0},
+        .hold_bindings = {{kp, G, 0}, {kp, E, 0}, {kp, F, 0}},
+        .interval_ms = 150,
+        .tap_intervals_ms = {20, 40, 60},
+    };
     for (uint32_t i = 0; i < 16; i++) {
         long_name[CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN - 2] = '0' + i / 10;
         long_name[CONFIG_ZMK_RUNTIME_TAPDANCE_NAME_MAX_LEN - 1] = '0' + i % 10;
@@ -129,6 +138,13 @@ static void verify_timer(struct k_work *work) {
             break;
         }
         __ASSERT(ret == 0, "long entry creation: %d", ret);
+        ret = zmk_runtime_tapdance_write(id, &full, false);
+        if (ret == -ENOSPC) {
+            __ASSERT(zmk_runtime_tapdance_delete(id, false) == 0,
+                     "failed full entry can be removed");
+            break;
+        }
+        __ASSERT(ret == 0, "full entry write: %d", ret);
         if (long_count == 0) {
             first_long_id = id;
         }
@@ -253,6 +269,60 @@ static void run(struct k_work *work) {
     position(2, false, 10);
     interrupt();
     EXPECT(DOWN(E), UP(E));
+
+    cfg.double_binding.param1 = B;
+    cfg.hold_bindings[0] = (struct zmk_custom_setting_behavior_value){kp, G, 0};
+    cfg.hold_bindings[1] = (struct zmk_custom_setting_behavior_value){kp, E, 0};
+    cfg.hold_bindings[2] = (struct zmk_custom_setting_behavior_value){kp, F, 0};
+    cfg.interval_ms = 150;
+    cfg.tap_intervals_ms[0] = 20;
+    cfg.tap_intervals_ms[1] = 40;
+    cfg.tap_intervals_ms[2] = 60;
+    size_t old_size = zmk_runtime_tapdance_pool_used();
+    __ASSERT(zmk_runtime_tapdance_write(0, &cfg, false) == 0, "hold and timing config");
+    __ASSERT(zmk_runtime_tapdance_pool_used() == old_size + 44,
+             "only configured hold and timing fields use pool bytes");
+    __ASSERT(zmk_runtime_tapdance_read(0, &updated) == 0 && updated.hold_bindings[2].param1 == F &&
+                 updated.tap_intervals_ms[0] == 20 && updated.interval_ms == 150,
+             "round trip hold and timing");
+    __ASSERT(zmk_runtime_tapdance_set_interval(0, 2, 2001, false) == -EINVAL,
+             "reject out-of-range interval");
+    position(0, true, 1);
+    interrupt();
+    EXPECT(DOWN(G));
+    position(0, false, 10);
+    EXPECT(UP(G));
+    position(0, true, 1);
+    position(0, false, 10);
+    position(0, true, 5);
+    interrupt();
+    EXPECT(DOWN(E));
+    position(0, false, 10);
+    EXPECT(UP(E));
+    position(0, true, 1);
+    position(0, false, 10);
+    position(0, true, 5);
+    position(0, false, 10);
+    position(0, true, 10);
+    EXPECT();
+    position(0, false, 10);
+    EXPECT(DOWN(C), UP(C));
+    position(0, true, 1);
+    position(0, false, 10);
+    position(0, true, 5);
+    position(0, false, 10);
+    position(0, true, 10);
+    interrupt();
+    EXPECT(DOWN(F));
+    position(0, false, 10);
+    EXPECT(UP(F));
+    cfg.hold_bindings[0] = (struct zmk_custom_setting_behavior_value){0};
+    cfg.hold_bindings[1] = (struct zmk_custom_setting_behavior_value){0};
+    cfg.hold_bindings[2] = (struct zmk_custom_setting_behavior_value){0};
+    cfg.interval_ms = 0;
+    memset(cfg.tap_intervals_ms, 0, sizeof(cfg.tap_intervals_ms));
+    __ASSERT(zmk_runtime_tapdance_write(0, &cfg, false) == 0, "clear overrides");
+    __ASSERT(zmk_runtime_tapdance_pool_used() == old_size, "clearing overrides returns pool bytes");
 
     cfg.double_binding = (struct zmk_custom_setting_behavior_value){
         zmk_behavior_get_local_id("tapdance_test_reject"), 0, 0};

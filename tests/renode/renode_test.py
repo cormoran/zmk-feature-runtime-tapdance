@@ -311,7 +311,7 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
             self._module_call(proto.Request(get_global=proto.GetGlobalRequest())),
             "global",
         )
-        self.assertEqual(global_state.api_version, 2)
+        self.assertEqual(global_state.api_version, 3)
         self.assertEqual(global_state.max_entries, 16)
         self.assertEqual(global_state.used_entries, 0)
         self.assertGreater(global_state.pool_bytes_total, 0)
@@ -327,6 +327,13 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         self.assertTrue(created.state.has_unsaved_changes)
         self.assertTrue(created.state.HasField("config"))
         self.assertTrue(created.state.config.HasField("single_binding"))
+        self.assertEqual(
+            getattr(
+                self._module_call(proto.Request(get_global=proto.GetGlobalRequest())),
+                "global",
+            ).pool_bytes_used,
+            len("tapdance/0") + 1 + 4 + len("Alpha"),
+        )
 
         interval = self._module_call(
             proto.Request(
@@ -356,6 +363,49 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
         reread = self._module_call(proto.Request(get=proto.GetRequest(index=0)))
         self.assertEqual(reread.state.config, config)
         self.assertEqual(reread.state.interval_ms, 250)
+        hold = proto.Binding(behavior_id=key_press, param1=458760)
+        held = self._module_call(
+            proto.Request(
+                set=proto.SetRequest(index=0, tap_count=2, binding=hold, hold=True)
+            )
+        )
+        self.assertEqual(held.state.config.double_hold_binding, hold)
+        dance_time = self._module_call(
+            proto.Request(
+                set_timing=proto.SetTimingRequest(index=0, tap_count=0, interval_ms=300)
+            )
+        )
+        self.assertEqual(dance_time.state.config.dance_interval_ms, 300)
+        tap_time = self._module_call(
+            proto.Request(
+                set_timing=proto.SetTimingRequest(index=0, tap_count=2, interval_ms=125)
+            )
+        )
+        self.assertEqual(tap_time.state.config.double_interval_ms, 125)
+        self.assertEqual(
+            getattr(
+                self._module_call(proto.Request(get_global=proto.GetGlobalRequest())),
+                "global",
+            ).pool_bytes_used,
+            len("tapdance/0") + 1 + 4 + len("Alpha") + 3 * 12 + 12 + 4,
+        )
+        self._module_call(
+            proto.Request(
+                set=proto.SetRequest(
+                    index=0, tap_count=2, binding=proto.Binding(), hold=True
+                )
+            )
+        )
+        self._module_call(
+            proto.Request(
+                set_timing=proto.SetTimingRequest(index=0, tap_count=2, interval_ms=0)
+            )
+        )
+        self._module_call(
+            proto.Request(
+                set_timing=proto.SetTimingRequest(index=0, tap_count=0, interval_ms=0)
+            )
+        )
         renamed = self._module_call(
             proto.Request(rename=proto.RenameRequest(index=0, name="Renamed"))
         )
@@ -443,6 +493,14 @@ class RenodeWiredSplitModuleTests(unittest.TestCase):
             ),
             proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=0)),
             proto.Request(set_interval=proto.SetIntervalRequest(interval_ms=2001)),
+            proto.Request(
+                set_timing=proto.SetTimingRequest(index=0, tap_count=4, interval_ms=100)
+            ),
+            proto.Request(
+                set_timing=proto.SetTimingRequest(
+                    index=0, tap_count=0, interval_ms=2001
+                )
+            ),
             proto.Request(
                 set=proto.SetRequest(
                     index=0,
