@@ -86,7 +86,7 @@ beforeEach(() => {
         poolBytesTotal: 256,
         poolBytesUsed: ids.length * 48,
         hasUnsavedChanges: ids.some((id) => entries[id].dirty),
-        apiVersion: 2,
+        apiVersion: 3,
       };
     } else if (inner.list) {
       const selected = ids.filter(
@@ -112,21 +112,41 @@ beforeEach(() => {
         maxCount: 3,
         hasUnsavedChanges: true,
       };
-    } else if (inner.rename || inner.set || inner.get) {
+    } else if (inner.rename || inner.set || inner.setTiming || inner.get) {
       const id =
-        inner.rename?.index ?? inner.set?.index ?? inner.get?.index ?? 0;
+        inner.rename?.index ??
+        inner.set?.index ??
+        inner.setTiming?.index ??
+        inner.get?.index ??
+        0;
       const entry = entries[id];
       if (!entry)
         response.error = { code: -2, message: "Tap dance ID does not exist" };
       else {
         if (inner.rename) entry.name = inner.rename.name;
         if (inner.set) {
-          const key = ["", "singleBinding", "doubleBinding", "tripleBinding"][
-            inner.set.tapCount
-          ] as keyof Config;
+          const key = (
+            inner.set.hold
+              ? [
+                  "",
+                  "singleHoldBinding",
+                  "doubleHoldBinding",
+                  "tripleHoldBinding",
+                ]
+              : ["", "singleBinding", "doubleBinding", "tripleBinding"]
+          )[inner.set.tapCount] as keyof Config;
           entry.config = { ...entry.config, [key]: inner.set.binding };
         }
-        if (inner.set || inner.rename) entry.dirty = true;
+        if (inner.setTiming) {
+          const key = [
+            "danceIntervalMs",
+            "singleIntervalMs",
+            "doubleIntervalMs",
+            "tripleIntervalMs",
+          ][inner.setTiming.tapCount] as keyof Config;
+          entry.config = { ...entry.config, [key]: inner.setTiming.intervalMs };
+        }
+        if (inner.set || inner.setTiming || inner.rename) entry.dirty = true;
         response.state = {
           index: id,
           name: entry.name,
@@ -215,4 +235,47 @@ it("uses a stable firmware-issued ID after deletion", async () => {
   await waitFor(() =>
     expect(screen.getByText("New (ID 1)")).toBeInTheDocument()
   );
+});
+
+it("applies a hold action and interval overrides", async () => {
+  entries[0] = { name: "Alpha", config: blank(), dirty: false };
+  mount();
+  await waitFor(() =>
+    expect(screen.getByText("Alpha (ID 0)")).toBeInTheDocument()
+  );
+  await userEvent.selectOptions(
+    screen.getByLabelText("Single 0 behavior"),
+    "1"
+  );
+  await userEvent.selectOptions(
+    screen.getByLabelText("Single 0 hold behavior"),
+    "1"
+  );
+  await userEvent.type(
+    screen.getByLabelText("Tap dance 0 default interval (ms)"),
+    "300"
+  );
+  await userEvent.type(screen.getByLabelText("Single 0 interval (ms)"), "125");
+  await userEvent.click(
+    screen.getByRole("button", { name: "Apply tap dance 0" })
+  );
+  await waitFor(() =>
+    expect(
+      requests.some(
+        (item) => item.set?.hold && item.set.binding?.behaviorId === 1
+      )
+    ).toBe(true)
+  );
+  expect(
+    requests.some(
+      (item) =>
+        item.setTiming?.tapCount === 0 && item.setTiming.intervalMs === 300
+    )
+  ).toBe(true);
+  expect(
+    requests.some(
+      (item) =>
+        item.setTiming?.tapCount === 1 && item.setTiming.intervalMs === 125
+    )
+  ).toBe(true);
 });

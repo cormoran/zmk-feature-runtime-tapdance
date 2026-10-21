@@ -21,8 +21,8 @@ ZMK_RPC_CUSTOM_SUBSYSTEM_RESPONSE_BUFFER(cormoran__runtime_tapdance,
                                          cormoran_runtime_tapdance_Response);
 BUILD_ASSERT(CONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE >= 256,
              "Runtime tapdance requires a 256-byte Studio RX buffer");
-BUILD_ASSERT(CONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE >= 256,
-             "Runtime tapdance requires a 256-byte Studio TX buffer");
+BUILD_ASSERT(CONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE >= 320,
+             "Runtime tapdance requires a 320-byte Studio TX buffer");
 BUILD_ASSERT(cormoran_runtime_tapdance_Request_size + 64 <= CONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE,
              "Runtime tapdance request exceeds Studio RX buffer");
 BUILD_ASSERT(cormoran_runtime_tapdance_Response_size + 64 <= CONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE,
@@ -62,9 +62,19 @@ static int set_state(cormoran_runtime_tapdance_Response *resp, uint32_t index) {
     state->config.has_single_binding = true;
     state->config.has_double_binding = true;
     state->config.has_triple_binding = true;
+    state->config.has_single_hold_binding = config.hold_bindings[0].behavior_id != 0;
+    state->config.has_double_hold_binding = config.hold_bindings[1].behavior_id != 0;
+    state->config.has_triple_hold_binding = config.hold_bindings[2].behavior_id != 0;
     encode_binding(&state->config.single_binding, &config.single_binding);
     encode_binding(&state->config.double_binding, &config.double_binding);
     encode_binding(&state->config.triple_binding, &config.triple_binding);
+    encode_binding(&state->config.single_hold_binding, &config.hold_bindings[0]);
+    encode_binding(&state->config.double_hold_binding, &config.hold_bindings[1]);
+    encode_binding(&state->config.triple_hold_binding, &config.hold_bindings[2]);
+    state->config.dance_interval_ms = config.interval_ms;
+    state->config.single_interval_ms = config.tap_intervals_ms[0];
+    state->config.double_interval_ms = config.tap_intervals_ms[1];
+    state->config.triple_interval_ms = config.tap_intervals_ms[2];
     return 0;
 }
 
@@ -78,7 +88,7 @@ static void set_global(cormoran_runtime_tapdance_Response *resp) {
     global->pool_bytes_total = zmk_runtime_tapdance_pool_total();
     global->pool_bytes_used = zmk_runtime_tapdance_pool_used();
     global->has_unsaved_changes = zmk_runtime_tapdance_has_unsaved_changes();
-    global->api_version = 2;
+    global->api_version = 3;
 }
 
 struct list_context {
@@ -166,10 +176,20 @@ static bool dispatch_request(const zmk_custom_CallRequest *raw_request,
             .param1 = set->binding.param1,
             .param2 = set->binding.param2,
         };
-        rc = zmk_runtime_tapdance_set_binding(index, set->tap_count, &binding, set->persist);
+        rc = set->hold
+                 ? zmk_runtime_tapdance_set_hold_binding(index, set->tap_count, &binding,
+                                                         set->persist)
+                 : zmk_runtime_tapdance_set_binding(index, set->tap_count, &binding, set->persist);
         return_state = true;
         break;
     }
+    case cormoran_runtime_tapdance_Request_set_timing_tag:
+        index = req.request_type.set_timing.index;
+        rc = zmk_runtime_tapdance_set_interval(index, req.request_type.set_timing.tap_count,
+                                               req.request_type.set_timing.interval_ms,
+                                               req.request_type.set_timing.persist);
+        return_state = true;
+        break;
     case cormoran_runtime_tapdance_Request_remove_tag:
         index = req.request_type.remove.index;
         rc = zmk_runtime_tapdance_delete(index, req.request_type.remove.persist);

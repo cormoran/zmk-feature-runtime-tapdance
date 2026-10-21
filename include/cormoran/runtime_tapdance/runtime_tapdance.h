@@ -13,6 +13,9 @@ struct zmk_runtime_tapdance_config {
     struct zmk_custom_setting_behavior_value single_binding;
     struct zmk_custom_setting_behavior_value double_binding;
     struct zmk_custom_setting_behavior_value triple_binding;
+    struct zmk_custom_setting_behavior_value hold_bindings[3];
+    uint16_t interval_ms;
+    uint16_t tap_intervals_ms[3];
 };
 int zmk_runtime_tapdance_read(uint32_t index, struct zmk_runtime_tapdance_config *config);
 int zmk_runtime_tapdance_write(uint32_t index, const struct zmk_runtime_tapdance_config *config,
@@ -20,6 +23,11 @@ int zmk_runtime_tapdance_write(uint32_t index, const struct zmk_runtime_tapdance
 int zmk_runtime_tapdance_set_binding(uint32_t index, uint32_t tap_count,
                                      const struct zmk_custom_setting_behavior_value *binding,
                                      bool persist);
+int zmk_runtime_tapdance_set_hold_binding(uint32_t index, uint32_t tap_count,
+                                          const struct zmk_custom_setting_behavior_value *binding,
+                                          bool persist);
+int zmk_runtime_tapdance_set_interval(uint32_t index, uint32_t tap_count, uint32_t interval_ms,
+                                      bool persist);
 int zmk_runtime_tapdance_delete(uint32_t index, bool persist);
 int zmk_runtime_tapdance_create(const char *name, bool persist, uint32_t *index);
 int zmk_runtime_tapdance_rename(uint32_t index, const char *name, bool persist);

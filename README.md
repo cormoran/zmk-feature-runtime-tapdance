@@ -36,8 +36,9 @@ CONFIG_ZMK_RUNTIME_TAPDANCE=y
 CONFIG_ZMK_STUDIO=y
 CONFIG_ZMK_RUNTIME_TAPDANCE_STUDIO_RPC=y
 CONFIG_ZMK_CUSTOM_SETTINGS_STUDIO_RPC=y
+CONFIG_ZMK_CUSTOM_SETTINGS_LARGE_VALUE_MAX_SIZE=108
 CONFIG_ZMK_STUDIO_RPC_RX_BUF_SIZE=256
-CONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=256
+CONFIG_ZMK_STUDIO_RPC_TX_BUF_SIZE=320
 CONFIG_ZMK_LOW_PRIORITY_THREAD_STACK_SIZE=2048
 ```
 
@@ -84,13 +85,19 @@ are never reused.
 Choose a **single-tap behavior** to activate an entry. Double and triple
 behaviors are optional, but triple requires double. For example, select **Key
 Press** for all three and set parameter 1 to `458756` (`&kp A`), `458757`
-(`&kp B`), and `458758` (`&kp C`); parameter 2 is `0`. The firmware checks
+(`&kp B`), and `458758` (`&kp C`); parameter 2 is `0`. Each tap count can also
+have a hold action. It fires when the key is still down at its deadline or
+when another key interrupts the dance. Releasing the last configured tap
+before that deadline fires its tap action. Without a hold action, the last tap
+still fires immediately. The firmware checks
 behavior IDs and parameters against ZMK metadata. Apply writes each binding to
 RAM; Save persists pending edits to flash. Discard restores saved values and
 removes entries created only in RAM. Delete erases an entry immediately from RAM
 and flash. The ID counter is saved on every Create, including RAM-only creates,
 so Discard never reuses an ID. The global
-interval defaults to 200 ms and accepts 1–2000 ms.
+interval defaults to 200 ms and accepts 1–2000 ms. A named dance may override
+it, and each tap count may override the dance interval. A blank override
+inherits the next default.
 
 Module values also appear in the custom-settings subsystem for import/export.
 Behavior IDs are local to the firmware's behavior map; reuse exports with the
@@ -105,17 +112,27 @@ retained so migration can be retried after increasing the pool size.
 
 ## Recognition rules
 
-The interval runs from each press to the next press. A release must occur
+The selected interval runs from each press to the next press. A release must occur
 between taps. A press exactly at the deadline starts a new sequence. The last
-configured tap count resolves immediately: with single and double configured,
-the second press invokes double; with triple configured, double waits for a
-possible third press. Another key press resolves any undecided dances first.
+configured tap count resolves immediately when it has no hold action: with
+single and double configured, the second press invokes double; with triple
+configured, double waits for a possible third press. With a hold action on
+the last count, release, deadline, or interruption decides tap versus hold.
+Another key press resolves any undecided dances first.
 
 The selected action stays pressed while the final physical tap is held, and
 releases with that tap. A single held key resolves when its interval expires.
 Each active sequence keeps its starting configuration, even if the slot is edited
 while it runs. Sequences are tracked by physical position and split input source,
 so several keys can share one ID. Keymap layers choose where `&rtd` is active.
+
+Entry storage is variable length. An empty named dance's value uses its name
+plus a four-byte header; the pool also stores the entry key and its terminator.
+Each configured tap or hold action adds 12 bytes, and each
+configured interval override adds two bytes. Existing version 4 entries stay
+readable and are rewritten in this compact format on their next edit. The
+larger custom-settings limit above permits a fully configured dance; it does
+not reserve that many bytes for every dance.
 
 ## Development and tests
 

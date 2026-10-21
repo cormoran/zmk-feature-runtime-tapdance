@@ -21,6 +21,10 @@ const codec = {
 };
 type BehaviorOption = { id: number; name: string };
 const emptyBinding = () => Binding.create();
+const sameBinding = (left?: Binding, right?: Binding) =>
+  (left?.behaviorId || 0) === (right?.behaviorId || 0) &&
+  (left?.param1 || 0) === (right?.param1 || 0) &&
+  (left?.param2 || 0) === (right?.param2 || 0);
 const uint32 = (value: number) =>
   Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
 function checked(response: Response | null): Response {
@@ -37,6 +41,7 @@ export function TapDanceEditor() {
   const subsystemIndex = subsystem?.index;
   const { locked } = useStudioLockState();
   const [slots, setSlots] = useState<Record<number, Config>>({});
+  const appliedSlots = useRef<Record<number, Config>>({});
   const [names, setNames] = useState<Record<number, string>>({});
   const [visible, setVisible] = useState<number[]>([]);
   const [maxCount, setMaxCount] = useState(0);
@@ -59,8 +64,10 @@ export function TapDanceEditor() {
     setError("");
     try {
       const global = checked(await call({ getGlobal: {} })).global;
-      if (!global || global.apiVersion !== 2)
-        throw new Error("Firmware does not support named tap dances");
+      if (!global || global.apiVersion !== 3)
+        throw new Error(
+          "Firmware does not support per-tap hold and timing settings"
+        );
       if (generation !== loadGeneration.current.value) return;
       const loaded: Record<number, Config> = {};
       const loadedNames: Record<number, string> = {};
@@ -90,6 +97,7 @@ export function TapDanceEditor() {
       }
       if (generation !== loadGeneration.current.value) return;
       setSlots(loaded);
+      appliedSlots.current = loaded;
       setNames(loadedNames);
       setVisible(ids);
       setMaxCount(global.maxEntries);
@@ -176,6 +184,7 @@ export function TapDanceEditor() {
               item.delete ||
               item.remove ||
               item.set?.persist ||
+              item.setTiming?.persist ||
               item.setInterval?.persist
           )
             ? "Saved to flash."
@@ -233,16 +242,38 @@ export function TapDanceEditor() {
       return "Select a single-tap behavior for this dance.";
     if (config.tripleBinding?.behaviorId && !config.doubleBinding?.behaviorId)
       return "Select a double-tap behavior before adding a triple tap.";
-    for (const binding of [
+    const taps = [
       config.singleBinding,
       config.doubleBinding,
       config.tripleBinding,
-    ]) {
+    ];
+    const holds = [
+      config.singleHoldBinding,
+      config.doubleHoldBinding,
+      config.tripleHoldBinding,
+    ];
+    const timings = [
+      config.singleIntervalMs,
+      config.doubleIntervalMs,
+      config.tripleIntervalMs,
+    ];
+    for (let i = 0; i < 3; i++) {
+      if (!taps[i]?.behaviorId && (holds[i]?.behaviorId || timings[i]))
+        return "Set a tap action before its hold action or interval.";
+    }
+    for (const binding of [...taps, ...holds]) {
       if (
         binding &&
         ![binding.behaviorId, binding.param1, binding.param2].every(uint32)
       )
         return "Behavior IDs and parameters must be unsigned 32-bit integers.";
+    }
+    for (const value of [config.danceIntervalMs, ...timings]) {
+      if (
+        value !== undefined &&
+        (!Number.isInteger(value) || value < 0 || value > 2000)
+      )
+        return "Interval overrides must be whole milliseconds from 1 to 2000, or blank to inherit.";
     }
     return "";
   };
@@ -255,14 +286,78 @@ export function TapDanceEditor() {
       return;
     }
     const requests: Request[] = [];
-    const add = (tapCount: number, binding: Binding) =>
-      requests.push({ set: { index, tapCount, binding, persist } });
-    if (!config.tripleBinding?.behaviorId) add(3, emptyBinding());
-    if (!config.doubleBinding?.behaviorId) add(2, emptyBinding());
-    add(1, config.singleBinding!);
-    if (config.doubleBinding?.behaviorId) add(2, config.doubleBinding);
-    if (config.tripleBinding?.behaviorId) add(3, config.tripleBinding);
-    void send(requests);
+    const previous = appliedSlots.current[index] ?? Config.create();
+    const taps = [
+      config.singleBinding,
+      config.doubleBinding,
+      config.tripleBinding,
+    ];
+    const oldTaps = [
+      previous.singleBinding,
+      previous.doubleBinding,
+      previous.tripleBinding,
+    ];
+    const holds = [
+      config.singleHoldBinding,
+      config.doubleHoldBinding,
+      config.tripleHoldBinding,
+    ];
+    const oldHolds = [
+      previous.singleHoldBinding,
+      previous.doubleHoldBinding,
+      previous.tripleHoldBinding,
+    ];
+    const timings = [
+      config.singleIntervalMs,
+      config.doubleIntervalMs,
+      config.tripleIntervalMs,
+    ];
+    const oldTimings = [
+      previous.singleIntervalMs,
+      previous.doubleIntervalMs,
+      previous.tripleIntervalMs,
+    ];
+    const add = (tapCount: number, binding: Binding, hold = false) =>
+      requests.push({ set: { index, tapCount, binding, persist, hold } });
+    // Clear dependent overrides before removing a tap action.
+    for (let count = 3; count >= 1; count--) {
+      const i = count - 1;
+      if (oldTaps[i]?.behaviorId && !taps[i]?.behaviorId) {
+        if (oldHolds[i]?.behaviorId) add(count, emptyBinding(), true);
+        if (oldTimings[i])
+          requests.push({
+            setTiming: { index, tapCount: count, intervalMs: 0, persist },
+          });
+        add(count, emptyBinding());
+      }
+    }
+    for (let i = 0; i < 3; i++) {
+      if (taps[i]?.behaviorId && !sameBinding(taps[i], oldTaps[i]))
+        add(i + 1, taps[i]!);
+    }
+    for (let i = 0; i < 3; i++) {
+      if (taps[i]?.behaviorId && !sameBinding(holds[i], oldHolds[i]))
+        add(i + 1, holds[i] ?? emptyBinding(), true);
+      if (taps[i]?.behaviorId && (timings[i] || 0) !== (oldTimings[i] || 0))
+        requests.push({
+          setTiming: {
+            index,
+            tapCount: i + 1,
+            intervalMs: timings[i] || 0,
+            persist,
+          },
+        });
+    }
+    if ((config.danceIntervalMs || 0) !== (previous.danceIntervalMs || 0))
+      requests.push({
+        setTiming: {
+          index,
+          tapCount: 0,
+          intervalMs: config.danceIntervalMs || 0,
+          persist,
+        },
+      });
+    if (requests.length) void send(requests);
   };
   const changeInterval = (persist: boolean) => {
     if (!Number.isInteger(interval) || interval < 1 || interval > 2000) {
@@ -278,8 +373,8 @@ export function TapDanceEditor() {
         Create a named tap dance and assign its ID as{" "}
         <code>&amp;rtd &lt;id&gt;</code>
         to a key. Single, double and triple taps invoke the selected behaviors.
-        The last configured tap count resolves immediately; other counts wait
-        for the interval or another key press.
+        Each tap count can have a separate hold action and interval. Blank
+        intervals inherit the dance interval, then the global interval.
       </p>
       <p>Apply changes in RAM. Save all writes pending changes to flash.</p>
       {locked && <p className="locked-banner">ZMK Studio is locked.</p>}
@@ -371,16 +466,56 @@ export function TapDanceEditor() {
           >
             Rename tap dance {index}
           </button>
+          <IntervalEditor
+            label={`Tap dance ${index} default interval (ms)`}
+            value={slots[index].danceIntervalMs}
+            onChange={(value) => edit(index, { danceIntervalMs: value })}
+          />
           {(["singleBinding", "doubleBinding", "tripleBinding"] as const).map(
-            (key) => (
-              <BindingEditor
-                key={key}
-                label={`${key === "singleBinding" ? "Single" : key === "doubleBinding" ? "Double" : "Triple"} ${index}`}
-                binding={slots[index][key] ?? emptyBinding()}
-                options={behaviors}
-                onChange={(binding) => edit(index, { [key]: binding })}
-              />
-            )
+            (key, i) => {
+              const label =
+                key === "singleBinding"
+                  ? "Single"
+                  : key === "doubleBinding"
+                    ? "Double"
+                    : "Triple";
+              const holdKey = (
+                [
+                  "singleHoldBinding",
+                  "doubleHoldBinding",
+                  "tripleHoldBinding",
+                ] as const
+              )[i];
+              const intervalKey = (
+                [
+                  "singleIntervalMs",
+                  "doubleIntervalMs",
+                  "tripleIntervalMs",
+                ] as const
+              )[i];
+              return (
+                <div key={key} className="tap-count-editor">
+                  <h3>{label} tap</h3>
+                  <BindingEditor
+                    label={`${label} ${index}`}
+                    binding={slots[index][key] ?? emptyBinding()}
+                    options={behaviors}
+                    onChange={(binding) => edit(index, { [key]: binding })}
+                  />
+                  <BindingEditor
+                    label={`${label} ${index} hold`}
+                    binding={slots[index][holdKey] ?? emptyBinding()}
+                    options={behaviors}
+                    onChange={(binding) => edit(index, { [holdKey]: binding })}
+                  />
+                  <IntervalEditor
+                    label={`${label} ${index} interval (ms)`}
+                    value={slots[index][intervalKey]}
+                    onChange={(value) => edit(index, { [intervalKey]: value })}
+                  />
+                </div>
+              );
+            }
           )}
           <div className="editor-actions">
             <button onClick={() => write(index, false)}>
@@ -398,6 +533,33 @@ export function TapDanceEditor() {
         </button>
       </div>
     </section>
+  );
+}
+
+function IntervalEditor({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number | undefined;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label>
+      {label}{" "}
+      <input
+        aria-label={label}
+        type="number"
+        min="1"
+        max="2000"
+        placeholder="Inherit"
+        value={value || ""}
+        onChange={(event) =>
+          onChange(event.target.value === "" ? 0 : event.target.valueAsNumber)
+        }
+      />
+    </label>
   );
 }
 
